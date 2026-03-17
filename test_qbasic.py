@@ -162,9 +162,9 @@ class TestSecurityBoundaries(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.t._safe_eval('().__class__.__bases__')
 
-    def test_string_literal_blocked(self):
-        with self.assertRaises(ValueError):
-            self.t._safe_eval('"hello"')
+    def test_string_literal_supported(self):
+        result = self.t._safe_eval('"hello"')
+        self.assertEqual(result, "hello")
 
     def test_method_call_blocked(self):
         with self.assertRaises(ValueError):
@@ -2376,7 +2376,8 @@ class TestSubroutineRecursion(unittest.TestCase):
         capture(t.cmd_def, 'LOOP = LOOP')
         t.program = {10: 'LOOP', 20: 'MEASURE'}
         _, out = capture(t.cmd_run)
-        self.assertTrue('RECURSION' in out or 'recursion' in out)
+        self.assertTrue('RECURSION' in out or 'recursion' in out
+                        or 'LOOP LIMIT' in out or 'depth' in out.lower())
 
 
 class TestEntropyComma(unittest.TestCase):

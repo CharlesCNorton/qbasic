@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 import math
 import ast
+import time
+import random
 import operator
 from typing import Any
 
@@ -43,6 +45,10 @@ class ExpressionMixin:
         ast.Gt: operator.gt, ast.GtE: operator.ge,
         ast.And: lambda a, b: a and b,
         ast.Or: lambda a, b: a or b,
+        ast.BitAnd: operator.and_,
+        ast.BitOr: operator.or_,
+        ast.BitXor: operator.xor,
+        ast.Invert: operator.invert,
     }
 
     def _ast_eval(self, node: ast.AST, ns: dict[str, Any]) -> Any:
@@ -50,7 +56,7 @@ class ExpressionMixin:
         if isinstance(node, ast.Expression):
             return self._ast_eval(node.body, ns)
         if isinstance(node, ast.Constant):
-            if isinstance(node.value, (int, float, complex)):
+            if isinstance(node.value, (int, float, complex, str)):
                 return node.value
             raise ValueError(f"UNSUPPORTED CONSTANT: {node.value!r}")
         if isinstance(node, ast.Name):
@@ -115,7 +121,32 @@ class ExpressionMixin:
             ns.update(extra_ns)
         for aname, adata in self.arrays.items():
             ns[aname] = lambda i, d=adata: d[int(i)]
+        # Instance-specific functions
+        ns['RND'] = lambda x=0: random.random()
+        ns['TIMER'] = getattr(self, '_run_timer', time.time)()
+        ns['POS'] = lambda x=0: 0
+        if hasattr(self, '_peek'):
+            ns['PEEK'] = lambda addr: self._peek(addr)
+        if hasattr(self, '_usr_fn'):
+            ns['USR'] = lambda addr: self._usr_fn(addr)
+        if hasattr(self, '_eof'):
+            ns['EOF'] = lambda h: self._eof(h)
+        if hasattr(self, '_get_string_ns'):
+            ns.update(self._get_string_ns())
+        if hasattr(self, '_user_fns'):
+            for fname, fdef in self._user_fns.items():
+                fn_params = fdef['params']
+                fn_body = fdef['body']
+                ns[fname] = lambda *args, p=fn_params, b=fn_body: self._call_user_fn_expr(p, b, args)
+        try:
+            import psutil
+            ns['FRE'] = lambda x=0: psutil.virtual_memory().available
+        except ImportError:
+            ns['FRE'] = lambda x=0: 0
+        # Hex/bin prefix support
         expr_str = str(expr).strip()
+        expr_str = re.sub(r'&H([0-9A-Fa-f]+)', r'0x\1', expr_str)
+        expr_str = re.sub(r'&B([01]+)', r'0b\1', expr_str)
         if not expr_str:
             raise ValueError("EMPTY EXPRESSION")
         try:
@@ -158,4 +189,16 @@ class ExpressionMixin:
         cond = re.sub(r'\bAND\b', ' and ', cond, flags=re.IGNORECASE)
         cond = re.sub(r'\bOR\b', ' or ', cond, flags=re.IGNORECASE)
         cond = re.sub(r'\bNOT\b', ' not ', cond, flags=re.IGNORECASE)
+        cond = re.sub(r'\bXOR\b', ' ^ ', cond, flags=re.IGNORECASE)
         return bool(self._safe_eval(cond, extra_ns=run_vars))
+
+    def _run_timer(self) -> float:
+        """Return elapsed time since terminal start."""
+        return time.time() - getattr(self, '_start_time', time.time())
+
+    def _call_user_fn_expr(self, params: list[str], body: str, args: tuple) -> float:
+        """Call a DEF FN function from within expression evaluation."""
+        ns: dict[str, Any] = {}
+        for i, pname in enumerate(params):
+            ns[pname] = args[i] if i < len(args) else 0
+        return float(self._safe_eval(body, extra_ns=ns))

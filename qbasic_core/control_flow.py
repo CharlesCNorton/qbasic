@@ -229,4 +229,48 @@ class ControlFlowMixin:
             if result is not None:
                 return result
 
+        # Extended control flow (classic BASIC, SUB/FUNCTION, debug)
+        ext_handlers = []
+        if hasattr(self, '_cf_data'):
+            ext_handlers.extend([
+                lambda: self._cf_data(stmt),
+                lambda: self._cf_read(stmt, run_vars),
+                lambda: self._cf_on_goto(stmt, run_vars, sorted_lines),
+                lambda: self._cf_on_gosub(stmt, run_vars, sorted_lines, ip),
+                lambda: self._cf_select_case(stmt, run_vars, sorted_lines, ip),
+                lambda: self._cf_case(stmt, sorted_lines, ip),
+                lambda: self._cf_end_select(stmt),
+                lambda: self._cf_do(stmt, run_vars, loop_stack, sorted_lines, ip),
+                lambda: self._cf_loop(stmt, run_vars, loop_stack, sorted_lines, ip),
+                lambda: self._cf_exit(stmt, loop_stack, sorted_lines, ip),
+                lambda: self._cf_swap(stmt, run_vars),
+                lambda: self._cf_def_fn(stmt, run_vars),
+                lambda: self._cf_option_base(stmt),
+            ])
+        if hasattr(self, '_cf_sub'):
+            ext_handlers.extend([
+                lambda: self._cf_sub(stmt, sorted_lines, ip),
+                lambda: self._cf_end_sub(stmt),
+                lambda: self._cf_function(stmt, sorted_lines, ip),
+                lambda: self._cf_end_function(stmt),
+                lambda: self._cf_call(stmt, run_vars, sorted_lines, ip),
+                lambda: self._cf_local(stmt, run_vars),
+                lambda: self._cf_static(stmt, run_vars),
+                lambda: self._cf_shared(stmt, run_vars),
+            ])
+        if hasattr(self, '_cf_on_error'):
+            ext_handlers.extend([
+                lambda: self._cf_on_error(stmt),
+                lambda: self._cf_resume(stmt, sorted_lines),
+                lambda: self._cf_error(stmt),
+                lambda: self._cf_assert(stmt, run_vars),
+                lambda: self._cf_stop(stmt, sorted_lines, ip),
+                lambda: self._cf_on_measure(stmt),
+                lambda: self._cf_on_timer(stmt),
+            ])
+        for handler in ext_handlers:
+            result = handler()
+            if result is not None:
+                return result
+
         return False, None

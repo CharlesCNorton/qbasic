@@ -1,15 +1,17 @@
-"""QBASIC file I/O mixin — SAVE, LOAD, INCLUDE, DIR, EXPORT, CSV."""
+"""QBASIC file I/O mixin — SAVE, LOAD, INCLUDE, DIR, EXPORT, CSV, OPEN/CLOSE/PRINT#/INPUT#/EOF/LPRINT."""
 
 from __future__ import annotations
 
 import os
 import re
+import sys
 
 import numpy as np
 
 from qbasic_core.engine import (
     GATE_TABLE,
     MAX_INCLUDE_DEPTH,
+    RE_OPEN, RE_CLOSE, RE_PRINT_FILE, RE_INPUT_FILE, RE_LPRINT,
 )
 
 
@@ -213,3 +215,128 @@ class FileIOMixin:
                 print(f"  {line}")
             if len(lines) > 20:
                 print(f"  ... ({len(lines)-20} more)")
+
+    # ── File handles: OPEN, CLOSE, PRINT#, INPUT#, EOF, LPRINT ────────
+
+    def _init_file_handles(self) -> None:
+        self._file_handles: dict[int, Any] = {}
+        self._lprint_path: str | None = None
+
+    def cmd_open(self, rest: str) -> None:
+        """OPEN file FOR INPUT|OUTPUT|APPEND AS #n"""
+        m = RE_OPEN.match(f"OPEN {rest}")
+        if not m:
+            print("?USAGE: OPEN \"file\" FOR INPUT|OUTPUT|APPEND AS #n")
+            return
+        path, mode_str, handle = m.group(1).strip(), m.group(2).upper(), int(m.group(3))
+        try:
+            path = self._sanitize_path(path)
+        except ValueError as e:
+            print(f"?OPEN ERROR: {e}")
+            return
+        mode_map = {'INPUT': 'r', 'OUTPUT': 'w', 'APPEND': 'a'}
+        mode = mode_map.get(mode_str, 'r')
+        try:
+            self._file_handles[handle] = open(path, mode, encoding='utf-8')
+            print(f"OPENED #{handle} ({path}, {mode_str})")
+        except Exception as e:
+            print(f"?OPEN ERROR: {e}")
+
+    def cmd_close(self, rest: str) -> None:
+        """CLOSE #n — close a file handle."""
+        m = RE_CLOSE.match(f"CLOSE {rest}")
+        if not m:
+            print("?USAGE: CLOSE #n")
+            return
+        handle = int(m.group(1))
+        if handle in self._file_handles:
+            self._file_handles[handle].close()
+            del self._file_handles[handle]
+            print(f"CLOSED #{handle}")
+        else:
+            print(f"?HANDLE #{handle} NOT OPEN")
+
+    def _exec_print_file(self, stmt: str, run_vars: dict[str, Any]) -> bool:
+        """Handle PRINT #n, data during execution."""
+        m = RE_PRINT_FILE.match(stmt)
+        if not m:
+            return False
+        handle = int(m.group(1))
+        data = m.group(2).strip()
+        if handle not in self._file_handles:
+            print(f"?HANDLE #{handle} NOT OPEN")
+            return True
+        f = self._file_handles[handle]
+        # Evaluate data
+        if (data.startswith('"') and data.endswith('"')):
+            f.write(data[1:-1] + '\n')
+        else:
+            try:
+                val = self._eval_with_vars(data, run_vars) if run_vars else self.eval_expr(data)
+                f.write(str(val) + '\n')
+            except Exception:
+                f.write(data + '\n')
+        f.flush()
+        return True
+
+    def _exec_input_file(self, stmt: str, run_vars: dict[str, Any]) -> bool:
+        """Handle INPUT #n, var during execution."""
+        m = RE_INPUT_FILE.match(stmt)
+        if not m:
+            return False
+        handle = int(m.group(1))
+        var = m.group(2)
+        if handle not in self._file_handles:
+            print(f"?HANDLE #{handle} NOT OPEN")
+            return True
+        f = self._file_handles[handle]
+        line = f.readline()
+        if not line:
+            run_vars[var] = 0
+            self.variables[var] = 0
+        else:
+            line = line.strip()
+            if var.endswith('$'):
+                run_vars[var] = line
+                self.variables[var] = line
+            else:
+                try:
+                    val = float(line) if '.' in line else int(line)
+                except ValueError:
+                    val = line
+                run_vars[var] = val
+                self.variables[var] = val
+        return True
+
+    def _exec_lprint(self, stmt: str, run_vars: dict[str, Any]) -> bool:
+        """Handle LPRINT data — output to log file or stderr."""
+        m = RE_LPRINT.match(stmt)
+        if not m:
+            return False
+        data = m.group(1).strip()
+        if (data.startswith('"') and data.endswith('"')):
+            text = data[1:-1]
+        else:
+            try:
+                text = str(self._eval_with_vars(data, run_vars) if run_vars else self.eval_expr(data))
+            except Exception:
+                text = data
+        if self._lprint_path:
+            with open(self._lprint_path, 'a', encoding='utf-8') as f:
+                f.write(text + '\n')
+        else:
+            print(text, file=sys.stderr)
+        return True
+
+    def _eof(self, handle: float) -> float:
+        """EOF(n) — return 1 if at end of file, 0 otherwise."""
+        h = int(handle)
+        if h not in self._file_handles:
+            return 1.0
+        f = self._file_handles[h]
+        pos = f.tell()
+        ch = f.read(1)
+        if not ch:
+            return 1.0
+        f.seek(pos)
+        return 0.0

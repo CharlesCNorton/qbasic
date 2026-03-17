@@ -23,6 +23,16 @@ from qbasic_core.engine import (
     RE_MEAS, RE_RESET, RE_UNITARY, RE_DIM, RE_INPUT,
     RE_CTRL, RE_INV,
     RE_GOTO_GOSUB_TARGET, RE_MEASURE_BASIS, RE_SYNDROME,
+    RE_POKE, RE_SYS, RE_OPEN, RE_CLOSE, RE_PRINT_FILE, RE_INPUT_FILE,
+    RE_LINE_INPUT, RE_LET_STR, RE_DIM_MULTI,
+    RE_DATA, RE_READ, RE_ON_GOTO, RE_ON_GOSUB,
+    RE_SELECT_CASE, RE_CASE, RE_DO, RE_LOOP_STMT, RE_EXIT,
+    RE_SUB, RE_END_SUB, RE_FUNCTION, RE_END_FUNCTION,
+    RE_CALL, RE_LOCAL, RE_STATIC_DECL, RE_SHARED,
+    RE_ON_ERROR, RE_RESUME, RE_ERROR_STMT, RE_ASSERT,
+    RE_SWAP, RE_DEF_FN, RE_OPTION_BASE,
+    RE_PRINT_USING, RE_COLOR, RE_LOCATE, RE_SCREEN, RE_LPRINT,
+    RE_ON_MEASURE, RE_ON_TIMER, RE_CHAIN, RE_MERGE,
 )
 from qbasic_core.expression import ExpressionMixin
 from qbasic_core.display import DisplayMixin
@@ -32,6 +42,14 @@ from qbasic_core.control_flow import ControlFlowMixin
 from qbasic_core.file_io import FileIOMixin
 from qbasic_core.analysis import AnalysisMixin
 from qbasic_core.sweep import SweepMixin
+from qbasic_core.memory import MemoryMixin
+from qbasic_core.strings import StringMixin
+from qbasic_core.screen import ScreenMixin
+from qbasic_core.classic import ClassicMixin
+from qbasic_core.subs import SubroutineMixin
+from qbasic_core.debug import DebugMixin
+from qbasic_core.program_mgmt import ProgramMgmtMixin
+from qbasic_core.profiler import ProfilerMixin
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -39,7 +57,9 @@ from qbasic_core.sweep import SweepMixin
 # ═══════════════════════════════════════════════════════════════════════
 
 class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, ControlFlowMixin,
-                     FileIOMixin, AnalysisMixin, SweepMixin):
+                     FileIOMixin, AnalysisMixin, SweepMixin,
+                     MemoryMixin, StringMixin, ScreenMixin, ClassicMixin,
+                     SubroutineMixin, DebugMixin, ProgramMgmtMixin, ProfilerMixin):
     # Method organization uses the mixin pattern to reduce apparent class
     # size while keeping everything on QBasicTerminal for import compat.
     #
@@ -125,6 +145,16 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         # LOCC mode
         self.locc = None
         self.locc_mode = False
+        # Subsystem initialization
+        self._start_time = time.time()
+        self._init_memory()
+        self._init_screen()
+        self._init_classic()
+        self._init_subs()
+        self._init_debug()
+        self._init_program_mgmt()
+        self._init_profiler()
+        self._init_file_handles()
 
     # ── REPL ──────────────────────────────────────────────────────────
 
@@ -161,7 +191,7 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         self._setup_readline()
         while True:
             try:
-                line = input('] ').strip()
+                line = input(self._prompt).strip()
                 if line:
                     self.process(line)
             except KeyboardInterrupt:
@@ -200,6 +230,16 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         'DENSITY': 'cmd_density', 'LOCCINFO': 'cmd_loccinfo',
         'UNDO': 'cmd_undo', 'BENCH': 'cmd_bench', 'RAM': 'cmd_ram',
         'BYE': '_quit', 'QUIT': '_quit', 'EXIT': '_quit',
+        # Memory
+        'MAP': 'cmd_map', 'CATALOG': 'cmd_catalog', 'MONITOR': 'cmd_monitor',
+        # Screen
+        'CLS': 'cmd_cls', 'PLAY': 'cmd_play',
+        # Debug
+        'TRON': 'cmd_tron', 'TROFF': 'cmd_troff', 'CONT': 'cmd_cont',
+        # Program management
+        'CHECKSUM': 'cmd_checksum',
+        # Classic
+        'RESTORE': 'cmd_restore',
     }
     _CMD_WITH_ARG = {
         'LIST': 'cmd_list', 'QUBITS': 'cmd_qubits', 'SHOTS': 'cmd_shots',
@@ -212,6 +252,20 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         'ENTROPY': 'cmd_entropy', 'CSV': 'cmd_csv', 'LOCC': 'cmd_locc',
         'SEND': 'cmd_send', 'SHARE': 'cmd_share', 'DIR': 'cmd_dir',
         'CLEAR': 'cmd_clear',
+        # Memory
+        'POKE': 'cmd_poke', 'SYS': 'cmd_sys', 'DUMP': 'cmd_dump', 'WAIT': 'cmd_wait',
+        # Screen
+        'SCREEN': 'cmd_screen', 'COLOR': 'cmd_color', 'LOCATE': 'cmd_locate',
+        'PROMPT': 'cmd_prompt',
+        # Debug
+        'BREAK': 'cmd_breakpoint', 'WATCH': 'cmd_watch', 'PROFILE': 'cmd_profile',
+        'STATS': 'cmd_stats',
+        # Program management
+        'AUTO': 'cmd_auto', 'EDIT': 'cmd_edit', 'COPY': 'cmd_copy',
+        'MOVE': 'cmd_move', 'FIND': 'cmd_find', 'REPLACE': 'cmd_replace',
+        'BANK': 'cmd_bank', 'CHAIN': 'cmd_chain', 'MERGE': 'cmd_merge',
+        # File handles
+        'OPEN': 'cmd_open', 'CLOSE': 'cmd_close',
     }
 
     def dispatch(self, line: str) -> None:
@@ -298,7 +352,14 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
             print(f"METHOD = {self.sim_method}")
 
     def cmd_list(self, rest: str = '') -> None:
-        """LIST — display all numbered program lines in order."""
+        """LIST — display program lines. LIST SUBS|VARS|ARRAYS for filtered views."""
+        arg = rest.strip().upper()
+        if arg == 'SUBS':
+            return self.cmd_list_subs()
+        if arg == 'VARS':
+            return self.cmd_list_vars()
+        if arg == 'ARRAYS':
+            return self.cmd_list_arrays()
         if not self.program:
             print("EMPTY PROGRAM")
             return
@@ -487,6 +548,9 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
 
         t0 = time.time()
         self._gosub_stack = []
+        self._collect_data()
+        sorted_lines = sorted(self.program.keys())
+        self._scan_subs(sorted_lines)
 
         # Build circuit
         try:
@@ -541,14 +605,18 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
 
         dt = time.time() - t0
 
-        # Display results
-        n_states = len(self.last_counts)
+        # Update status registers
         depth = qc.depth()
         n_gates = qc.size()
+        self._update_status(gate_count=n_gates, circuit_depth=depth,
+                           run_time_ms=dt * 1000)
+
+        # Display results
         print(f"\nRAN {len(self.program)} lines, {self.num_qubits} qubits, "
               f"{self.shots} shots in {dt:.2f}s  [depth={depth}, gates={n_gates}]")
         if has_measure:
             self.print_histogram(self.last_counts)
+            self._auto_display()
         else:
             print("(no MEASURE in program — use STATE or PROBS to inspect)")
 
@@ -916,7 +984,109 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         lambda self, s, _qc, _rv: self._try_exec_unitary(s),
         lambda self, s, _qc, _rv: self._try_exec_dim(s),
         lambda self, s, _qc, rv: self._try_exec_input(s, rv),
+        lambda self, s, _qc, rv: self._try_exec_poke(s, rv),
+        lambda self, s, _qc, rv: self._try_exec_sys(s),
+        lambda self, s, _qc, rv: self._exec_print_file(s, rv),
+        lambda self, s, _qc, rv: self._exec_input_file(s, rv),
+        lambda self, s, _qc, rv: self._exec_lprint(s, rv),
+        lambda self, s, _qc, rv: self._try_exec_line_input(s, rv),
+        lambda self, s, _qc, rv: self._try_exec_let_str(s, rv),
+        lambda self, s, _qc, rv: self._try_exec_print_using(s, rv),
+        lambda self, s, _qc, rv: self._try_exec_open_close(s),
+        lambda self, s, _qc, rv: self._try_exec_dim_multi(s),
     ]
+
+    def _try_exec_poke(self, stmt: str, run_vars: dict) -> bool:
+        m = RE_POKE.match(stmt)
+        if not m:
+            return False
+        addr = self._eval_with_vars(m.group(1), run_vars)
+        val = self._eval_with_vars(m.group(2), run_vars)
+        self._poke(addr, val)
+        return True
+
+    def _try_exec_sys(self, stmt: str) -> bool:
+        m = re.match(r'SYS\s+(.+)', stmt, re.IGNORECASE)
+        if not m:
+            return False
+        self.cmd_sys(m.group(1))
+        return True
+
+    def _try_exec_line_input(self, stmt: str, run_vars: dict) -> bool:
+        m = RE_LINE_INPUT.match(stmt)
+        if not m:
+            return False
+        prompt = m.group(1) or m.group(2)
+        var = m.group(2)
+        try:
+            val = input(f"{prompt}? ")
+            run_vars[var] = val
+            self.variables[var] = val
+        except (EOFError, KeyboardInterrupt):
+            run_vars[var] = ''
+            self.variables[var] = ''
+        return True
+
+    def _try_exec_let_str(self, stmt: str, run_vars: dict) -> bool:
+        m = RE_LET_STR.match(stmt)
+        if not m:
+            return False
+        name = m.group(1)
+        val = self._eval_string_expr(m.group(2))
+        run_vars[name] = val
+        self.variables[name] = val
+        return True
+
+    def _try_exec_print_using(self, stmt: str, run_vars: dict) -> bool:
+        m = RE_PRINT_USING.match(stmt)
+        if not m:
+            return False
+        fmt = m.group(1)
+        vals = [self._eval_with_vars(v.strip(), run_vars)
+                for v in m.group(2).split(',') if v.strip()]
+        # Simple format: # for digit, . for decimal point
+        result = fmt
+        for val in vals:
+            n_hash = result.count('#')
+            if n_hash > 0:
+                if '.' in result:
+                    decimal = result.count('#') - result.index('.') if '.' in result else 0
+                    formatted = f"{val:{n_hash}.{max(0, n_hash - result.index('#'))}f}"
+                else:
+                    formatted = f"{val:{n_hash}.0f}"
+                # Replace first run of # with formatted value
+                idx = result.find('#')
+                end = idx
+                while end < len(result) and result[end] in '#.':
+                    end += 1
+                result = result[:idx] + formatted.rjust(end - idx) + result[end:]
+        print(result)
+        return True
+
+    def _try_exec_open_close(self, stmt: str) -> bool:
+        m = RE_OPEN.match(stmt)
+        if m:
+            rest = stmt[4:].strip()
+            self.cmd_open(rest)
+            return True
+        m = RE_CLOSE.match(stmt)
+        if m:
+            self.cmd_close(m.group(1))
+            return True
+        return False
+
+    def _try_exec_dim_multi(self, stmt: str) -> bool:
+        m = RE_DIM_MULTI.match(stmt)
+        if not m:
+            return False
+        name = m.group(1)
+        dims = [int(d.strip()) for d in m.group(2).split(',')]
+        if len(dims) == 1:
+            self.arrays[name] = [0.0] * dims[0]
+        else:
+            # Multi-dimensional: store as dict with tuple keys
+            self.arrays[name] = {'_dims': dims}
+        return True
 
     @staticmethod
     def _split_colon_stmts(stmt: str) -> list[str]:
@@ -1511,6 +1681,30 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
     # ── Banner ────────────────────────────────────────────────────────
 
     def print_banner(self) -> None:
+        import platform
+        try:
+            import qiskit
+            qver = qiskit.__version__
+        except Exception:
+            qver = '?'
+        ram = _get_ram_gb()
+        ram_str = f"{ram[0]:.0f} GB RAM" if ram else "RAM unknown"
+        max_q = 32
+        if ram:
+            from qbasic_core.engine import _estimate_gb
+            for n in range(32, 0, -1):
+                if _estimate_gb(n) < ram[1]:
+                    max_q = n
+                    break
+        try:
+            gpu_str = ""
+            import subprocess
+            r = subprocess.run(['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
+                               capture_output=True, text=True, timeout=2)
+            if r.returncode == 0 and r.stdout.strip():
+                gpu_str = f" | GPU: {r.stdout.strip().split(chr(10))[0]}"
+        except Exception:
+            gpu_str = ""
         print(textwrap.dedent(f"""\
 
         ██████╗ ██████╗  █████╗ ███████╗██╗ ██████╗
@@ -1520,10 +1714,9 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         ╚██████╔╝██████╔╝██║  ██║███████║██║╚██████╗
          ╚══▀▀═╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝╚═╝ ╚═════╝
 
-        Quantum BASIC
-        {self.num_qubits} qubits | {self.shots} shots | Aer {self.sim_method}
-
-        LOCC dual-register distributed quantum simulation.
+        Quantum BASIC v0.2.0
+        Python {platform.python_version()} | Qiskit {qver} | {ram_str}{gpu_str}
+        {self.num_qubits} qubits | {self.shots} shots | max ~{max_q} qubits
         Type HELP for commands, DEMO LIST for demos.
         """))
 
