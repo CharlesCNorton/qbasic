@@ -1213,7 +1213,7 @@ class TestForLoopFloat(unittest.TestCase):
 
 
 class TestLOCCUnequalRegisters(unittest.TestCase):
-    """Test LOCC with unequal register sizes (item 8)."""
+    """Test LOCC with unequal register sizes."""
 
     def test_unequal_2party_init(self):
         eng = LOCCEngine([2, 5])
@@ -1247,7 +1247,7 @@ class TestLOCCUnequalRegisters(unittest.TestCase):
 
 
 class TestSplitIndependence(unittest.TestCase):
-    """Verify SPLIT mode registers are truly independent (item 18)."""
+    """Verify SPLIT mode registers are truly independent."""
 
     def test_gate_on_a_leaves_b_unchanged(self):
         eng = LOCCEngine([2, 2])
@@ -1276,7 +1276,7 @@ class TestSplitIndependence(unittest.TestCase):
 
 
 class TestRenumTargets(unittest.TestCase):
-    """Verify RENUM updates GOTO and GOSUB targets (item 19)."""
+    """Verify RENUM updates GOTO and GOSUB targets."""
 
     def setUp(self):
         self.t = QBasicTerminal()
@@ -1303,7 +1303,7 @@ class TestRenumTargets(unittest.TestCase):
 
 
 class TestExpressionEdgeCases(unittest.TestCase):
-    """Edge cases for the AST expression evaluator (item 20)."""
+    """Edge cases for the AST expression evaluator."""
 
     def setUp(self):
         self.t = QBasicTerminal()
@@ -1348,7 +1348,7 @@ class TestExpressionEdgeCases(unittest.TestCase):
 
 
 class TestLOCCBornRule(unittest.TestCase):
-    """Verify SEND outcomes follow Born-rule statistics (item 21)."""
+    """Verify SEND outcomes follow Born-rule statistics."""
 
     def test_send_50_50(self):
         """SEND on |+⟩ should give ~50/50 outcomes."""
@@ -1379,7 +1379,7 @@ class TestLOCCBornRule(unittest.TestCase):
 
 
 class TestDisplayValues(unittest.TestCase):
-    """Verify display commands show correct values, not just non-empty (item 17)."""
+    """Verify display commands show correct values, not just non-empty."""
 
     def setUp(self):
         self.t = QBasicTerminal()
@@ -1427,7 +1427,7 @@ class TestDisplayValues(unittest.TestCase):
 
 
 class TestDemoCorrectness(unittest.TestCase):
-    """Verify demo circuits produce correct quantum results (item 16)."""
+    """Verify demo circuits produce correct quantum results."""
 
     def test_teleport_valid_states(self):
         """Without correction, teleportation circuit produces all 8 outcomes."""
@@ -1457,7 +1457,7 @@ class TestDemoCorrectness(unittest.TestCase):
 
 
 class TestRunScript(unittest.TestCase):
-    """Test the script file runner (item 15)."""
+    """Test the script file runner."""
 
     def test_run_script_loads_program(self):
         with tempfile.NamedTemporaryFile(suffix='.qb', delete=False, mode='w') as f:
@@ -1512,7 +1512,7 @@ class TestRunScript(unittest.TestCase):
 
 
 class TestDefMultiline(unittest.TestCase):
-    """Test interactive multi-line DEF blocks (item 16)."""
+    """Test interactive multi-line DEF blocks."""
 
     def test_def_multiline_from_repl(self):
         import unittest.mock
@@ -1539,7 +1539,7 @@ class TestDefMultiline(unittest.TestCase):
 
 
 class TestBenchmark(unittest.TestCase):
-    """Test benchmark command (item 17)."""
+    """Test benchmark command."""
 
     def test_bench_runs(self):
         t = QBasicTerminal()
@@ -1713,7 +1713,7 @@ class TestColonSplitter(unittest.TestCase):
 
 
 class TestMeasEdgeCases(unittest.TestCase):
-    """Extended MEAS mid-circuit measurement tests (item 12)."""
+    """Extended MEAS mid-circuit measurement tests."""
 
     def setUp(self):
         self.t = QBasicTerminal()
@@ -1749,7 +1749,7 @@ class TestMeasEdgeCases(unittest.TestCase):
 
 
 class TestResetEdgeCases(unittest.TestCase):
-    """Extended RESET tests (item 13)."""
+    """Extended RESET tests."""
 
     def setUp(self):
         self.t = QBasicTerminal()
@@ -1781,7 +1781,7 @@ class TestResetEdgeCases(unittest.TestCase):
 
 
 class TestNoiseAffectsOutcomes(unittest.TestCase):
-    """Verify that noise models actually affect measurement distributions (item 14)."""
+    """Verify that noise models actually affect measurement distributions."""
 
     def setUp(self):
         self.t = QBasicTerminal()
@@ -1816,7 +1816,7 @@ class TestNoiseAffectsOutcomes(unittest.TestCase):
 
 
 class TestBasisMeasurement(unittest.TestCase):
-    """Test MEASURE_X, MEASURE_Y, MEASURE_Z (item 15)."""
+    """Test MEASURE_X, MEASURE_Y, MEASURE_Z."""
 
     def setUp(self):
         self.t = QBasicTerminal()
@@ -1850,7 +1850,7 @@ class TestBasisMeasurement(unittest.TestCase):
 
 
 class TestSyndromeMeasurement(unittest.TestCase):
-    """Test SYNDROME stabilizer measurement (item 16)."""
+    """Test SYNDROME stabilizer measurement."""
 
     def setUp(self):
         self.t = QBasicTerminal()
@@ -1891,7 +1891,7 @@ class TestSyndromeMeasurement(unittest.TestCase):
 
 
 class TestPathTraversal(unittest.TestCase):
-    """Test path traversal prevention (item 4)."""
+    """Test path traversal prevention."""
 
     def test_dotdot_rejected(self):
         t = QBasicTerminal()
@@ -1913,7 +1913,7 @@ class TestPathTraversal(unittest.TestCase):
 
 
 class TestIncludeDepthLimit(unittest.TestCase):
-    """Test INCLUDE depth limiting (item 5)."""
+    """Test INCLUDE depth limiting."""
 
     def setUp(self):
         self.t = QBasicTerminal()
@@ -1954,7 +1954,7 @@ class TestIncludeDepthLimit(unittest.TestCase):
 
 
 class TestNumericalStability(unittest.TestCase):
-    """Test _measure_np numerical stability (item 9)."""
+    """Test _measure_np numerical stability."""
 
     def test_measure_near_zero_state(self):
         """Measuring a near-zero statevector should return a normalized state."""
@@ -1968,7 +1968,7 @@ class TestNumericalStability(unittest.TestCase):
 
 
 class TestNewExprFunctions(unittest.TestCase):
-    """Test newly added expression functions (item 11)."""
+    """Test newly added expression functions."""
 
     def setUp(self):
         self.t = QBasicTerminal()
@@ -2103,7 +2103,7 @@ class TestNewFixes(unittest.TestCase):
 
 
 class TestSweepWithPlotille(unittest.TestCase):
-    """Test SWEEP with plotille (item 16 from gap list)."""
+    """Test SWEEP with plotille."""
 
     def test_sweep_plotille_no_crash(self):
         """SWEEP should not crash whether plotille is installed or not."""
@@ -2118,7 +2118,7 @@ class TestSweepWithPlotille(unittest.TestCase):
 
 
 class TestRunScriptDefBegin(unittest.TestCase):
-    """Test run_script with DEF BEGIN blocks (item 17 from gap list)."""
+    """Test run_script with DEF BEGIN blocks."""
 
     def test_def_begin_with_params(self):
         """DEF BEGIN with parameters should work in scripts."""
@@ -2157,7 +2157,7 @@ class TestRunScriptDefBegin(unittest.TestCase):
 
 
 class TestNestedInclude(unittest.TestCase):
-    """Test nested INCLUDE depth limiting (item 18 from gap list)."""
+    """Test nested INCLUDE depth limiting."""
 
     def test_nested_include_allowed(self):
         """INCLUDE inside an included file should now work (depth-limited)."""
@@ -2192,7 +2192,7 @@ class TestNestedInclude(unittest.TestCase):
 
 
 class TestSanitizePathAbsolute(unittest.TestCase):
-    """Test that _sanitize_path rejects absolute paths (item 8 from gap list)."""
+    """Test that _sanitize_path rejects absolute paths."""
 
     @unittest.skipIf(os.name == 'nt', "Unix paths not absolute on Windows")
     def test_unix_absolute_rejected(self):
@@ -2229,7 +2229,7 @@ class TestSanitizePathAbsolute(unittest.TestCase):
 
 
 class TestCtrlValidation(unittest.TestCase):
-    """Test CTRL gate qubit count validation in LOCC (item 13 from gap list)."""
+    """Test CTRL gate qubit count validation in LOCC."""
 
     def test_ctrl_wrong_target_count(self):
         """CTRL SWAP with wrong number of targets should error."""
@@ -2244,7 +2244,7 @@ class TestCtrlValidation(unittest.TestCase):
 
 
 class TestLoadSilent(unittest.TestCase):
-    """Test that LOAD does not print READY (item 6 from gap list)."""
+    """Test that LOAD does not print READY."""
 
     def test_load_no_ready(self):
         path = '_test_load_silent.qb'
@@ -2260,7 +2260,7 @@ class TestLoadSilent(unittest.TestCase):
 
 
 class TestNoiseExpandedCoverage(unittest.TestCase):
-    """Test that noise applies to more gate types (item 20 from gap list)."""
+    """Test that noise applies to more gate types."""
 
     def test_depolarizing_on_3q_gate(self):
         """Depolarizing noise on CCX should affect outcomes."""

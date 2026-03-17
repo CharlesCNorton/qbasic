@@ -58,7 +58,7 @@ class ExecResult(Enum):
 ExecOutcome = ExecResult | int
 
 # ═══════════════════════════════════════════════════════════════════════
-# Pre-compiled regexes (item 8: avoid recompiling on every call)
+# Pre-compiled regexes
 # ═══════════════════════════════════════════════════════════════════════
 
 RE_LINE_NUM = re.compile(r'^(\d+)\s*(.*)')
@@ -93,8 +93,58 @@ RE_MEASURE_BASIS = re.compile(
 RE_SYNDROME = re.compile(
     r'SYNDROME\s+(.*)', re.IGNORECASE)
 
+# ── Classic BASIC, memory, SUB/FUNCTION, debug ──────────────────────
+
+RE_DATA = re.compile(r'DATA\s+(.*)', re.IGNORECASE)
+RE_READ = re.compile(r'READ\s+(.*)', re.IGNORECASE)
+RE_ON_GOTO = re.compile(r'ON\s+(.+?)\s+GOTO\s+([\d\s,]+)', re.IGNORECASE)
+RE_ON_GOSUB = re.compile(r'ON\s+(.+?)\s+GOSUB\s+([\d\s,]+)', re.IGNORECASE)
+RE_SELECT_CASE = re.compile(r'SELECT\s+CASE\s+(.*)', re.IGNORECASE)
+RE_CASE = re.compile(r'CASE\s+(.*)', re.IGNORECASE)
+RE_DO = re.compile(r'DO(?:\s+(WHILE|UNTIL)\s+(.+))?\s*$', re.IGNORECASE)
+RE_LOOP_STMT = re.compile(r'LOOP(?:\s+(WHILE|UNTIL)\s+(.+))?\s*$', re.IGNORECASE)
+RE_EXIT = re.compile(r'EXIT\s+(FOR|WHILE|DO|SUB|FUNCTION)\s*$', re.IGNORECASE)
+RE_SUB = re.compile(r'SUB\s+(\w+)(?:\(([^)]*)\))?\s*$', re.IGNORECASE)
+RE_END_SUB = re.compile(r'END\s+SUB\s*$', re.IGNORECASE)
+RE_FUNCTION = re.compile(r'FUNCTION\s+(\w+)(?:\(([^)]*)\))?\s*$', re.IGNORECASE)
+RE_END_FUNCTION = re.compile(r'END\s+FUNCTION\s*$', re.IGNORECASE)
+RE_CALL = re.compile(r'CALL\s+(\w+)(?:\(([^)]*)\))?\s*$', re.IGNORECASE)
+RE_LOCAL = re.compile(r'LOCAL\s+(.*)', re.IGNORECASE)
+RE_STATIC_DECL = re.compile(r'STATIC\s+(.*)', re.IGNORECASE)
+RE_SHARED = re.compile(r'SHARED\s+(.*)', re.IGNORECASE)
+RE_ON_ERROR = re.compile(r'ON\s+ERROR\s+GOTO\s+(\d+)', re.IGNORECASE)
+RE_RESUME = re.compile(r'RESUME(?:\s+(.+))?\s*$', re.IGNORECASE)
+RE_ERROR_STMT = re.compile(r'ERROR\s+(\d+)', re.IGNORECASE)
+RE_ASSERT = re.compile(r'ASSERT\s+(.*)', re.IGNORECASE)
+RE_SWAP = re.compile(r'SWAP\s+(\w+\$?)\s*,\s*(\w+\$?)', re.IGNORECASE)
+RE_POKE = re.compile(r'POKE\s+(.+?)\s*,\s*(.+)', re.IGNORECASE)
+RE_SYS = re.compile(r'SYS\s+(.+)', re.IGNORECASE)
+RE_OPEN = re.compile(
+    r'OPEN\s+"?([^"]+)"?\s+FOR\s+(INPUT|OUTPUT|APPEND)\s+AS\s+#?(\d+)',
+    re.IGNORECASE)
+RE_CLOSE = re.compile(r'CLOSE\s+#?(\d+)', re.IGNORECASE)
+RE_PRINT_FILE = re.compile(r'PRINT\s+#(\d+)\s*,\s*(.*)', re.IGNORECASE)
+RE_INPUT_FILE = re.compile(r'INPUT\s+#(\d+)\s*,\s*(\w+\$?)', re.IGNORECASE)
+RE_LINE_INPUT = re.compile(
+    r'LINE\s+INPUT\s+(?:"([^"]*)"\s*,\s*)?(\w+\$?)', re.IGNORECASE)
+RE_OPTION_BASE = re.compile(r'OPTION\s+BASE\s+([01])', re.IGNORECASE)
+RE_CHAIN = re.compile(r'CHAIN\s+"?([^"]+)"?', re.IGNORECASE)
+RE_MERGE = re.compile(r'MERGE\s+"?([^"]+)"?', re.IGNORECASE)
+RE_DEF_FN = re.compile(
+    r'DEF\s+FN\s*(\w+)\s*\(([^)]*)\)\s*=\s*(.*)', re.IGNORECASE)
+RE_PRINT_USING = re.compile(
+    r'PRINT\s+USING\s+"([^"]+)"\s*;\s*(.*)', re.IGNORECASE)
+RE_COLOR = re.compile(r'COLOR\s+(\w+)(?:\s*,\s*(\w+))?', re.IGNORECASE)
+RE_LOCATE = re.compile(r'LOCATE\s+(\d+)\s*,\s*(\d+)', re.IGNORECASE)
+RE_SCREEN = re.compile(r'SCREEN\s+(\d+)', re.IGNORECASE)
+RE_LPRINT = re.compile(r'LPRINT\s+(.*)', re.IGNORECASE)
+RE_ON_MEASURE = re.compile(r'ON\s+MEASURE\s+GOSUB\s+(\d+)', re.IGNORECASE)
+RE_ON_TIMER = re.compile(r'ON\s+TIMER\s*\((\d+)\)\s+GOSUB\s+(\d+)', re.IGNORECASE)
+RE_DIM_MULTI = re.compile(r'DIM\s+(\w+)\((\d+(?:\s*,\s*\d+)*)\)', re.IGNORECASE)
+RE_LET_STR = re.compile(r'LET\s+(\w+\$)\s*=\s*(.*)', re.IGNORECASE)
+
 # ═══════════════════════════════════════════════════════════════════════
-# Optional rich-terminal packages (item 17: polished ASCII visualization)
+# Optional rich-terminal packages
 # ═══════════════════════════════════════════════════════════════════════
 
 try:
@@ -315,7 +365,7 @@ def _measure_np(
     Computes marginal probabilities for |0> and |1> on the target qubit,
     samples an outcome, and collapses + renormalizes the statevector.
     Includes a numerical floor to avoid division-by-zero when both
-    marginals underflow to zero (item 9: numerical stability).
+    marginals underflow to zero.
     """
     sv = np.ascontiguousarray(sv).reshape([2] * n_qubits)
     ax = n_qubits - 1 - qubit
