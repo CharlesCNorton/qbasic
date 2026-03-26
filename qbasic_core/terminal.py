@@ -801,14 +801,14 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
 
         return qc, has_measure
 
-    def _try_exec_meas(self, stmt: str, qc: 'QuantumCircuit', run_vars: dict) -> bool:
-        """Handle MEAS qubit -> var (mid-circuit measurement).
+    # Mid-circuit measurement returns this value in Qiskit circuit-build mode.
+    # Qiskit defers measurement to simulation time, so the variable cannot hold
+    # the actual outcome during circuit construction. For classical feedforward,
+    # use LOCC mode with SEND instead.
+    MEAS_CIRCUIT_MODE_VALUE = 0
 
-        Limitation: in the Qiskit circuit-build path, the variable is set to 0
-        unconditionally because Qiskit defers measurement to execution time.
-        The actual outcome is not available during circuit construction. For
-        true classical feedforward, use LOCC mode with SEND instead.
-        """
+    def _try_exec_meas(self, stmt: str, qc: 'QuantumCircuit', run_vars: dict) -> bool:
+        """Handle MEAS qubit -> var (mid-circuit measurement)."""
         m = RE_MEAS.match(stmt)
         if not m:
             return False
@@ -819,12 +819,11 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
             cr = ClassicalRegister(1, f'meas_{var}')
             qc.add_register(cr)
             qc.measure(qubit, cr[0])
-            run_vars[var] = 0
-            self.variables[var] = 0
-            self.io.writeln(f"  ?WARNING: MEAS {var} is always 0 in circuit mode — "
-                          f"IF/THEN branches conditioned on this variable will "
-                          f"always take the 0 path. Use LOCC mode with SEND for "
-                          f"classical feedforward.")
+            run_vars[var] = self.MEAS_CIRCUIT_MODE_VALUE
+            self.variables[var] = self.MEAS_CIRCUIT_MODE_VALUE
+            self.io.writeln(
+                f"  ?MEAS {var}: deferred measurement (value={self.MEAS_CIRCUIT_MODE_VALUE} "
+                f"during circuit build). Use LOCC SEND for classical feedforward.")
         return True
 
     def _try_exec_reset(self, stmt: str, qc: 'QuantumCircuit', run_vars: dict) -> bool:
@@ -1066,6 +1065,9 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         from qbasic_core.statements import (
             BarrierStmt, RemStmt, MeasureStmt, EndStmt, ReturnStmt,
             CompoundStmt, AtRegStmt, GotoStmt, GosubStmt,
+            ForStmt, NextStmt, WhileStmt, WendStmt, IfThenStmt,
+            LetStmt, LetArrayStmt, PrintStmt,
+            RawStmt,
         )
 
         # 1. Typed fast-path (no regex, no string manipulation)
@@ -1095,6 +1097,33 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
                 if ln == parsed.target:
                     return idx
             raise RuntimeError(f"GOSUB {parsed.target}: LINE NOT FOUND")
+        if isinstance(parsed, WendStmt):
+            _, r = self._cf_wend(run_vars, loop_stack, sorted_lines, ip)
+            return r
+        if isinstance(parsed, ForStmt):
+            r = self._cf_for(stmt, run_vars, loop_stack, ip)
+            return r[1] if r else ExecResult.ADVANCE
+        if isinstance(parsed, NextStmt):
+            r = self._cf_next(stmt, run_vars, loop_stack)
+            return r[1] if r else ExecResult.ADVANCE
+        if isinstance(parsed, WhileStmt):
+            r = self._cf_while(stmt, run_vars, loop_stack, sorted_lines, ip)
+            return r[1] if r else ExecResult.ADVANCE
+        if isinstance(parsed, LetStmt):
+            run_vars[parsed.name] = self._eval_with_vars(parsed.expr, run_vars)
+            self.variables[parsed.name] = run_vars[parsed.name]
+            return ExecResult.ADVANCE
+        if isinstance(parsed, LetArrayStmt):
+            r = self._cf_let_array(stmt, run_vars)
+            return r[1] if r else ExecResult.ADVANCE
+        if isinstance(parsed, PrintStmt):
+            r = self._cf_print(stmt, run_vars)
+            return r[1] if r else ExecResult.ADVANCE
+        if isinstance(parsed, IfThenStmt):
+            def _recurse_if(s, ls, sl, i, rv):
+                return self._exec_line(s, qc, ls, sl, i, rv)
+            r = self._cf_if_then(stmt, run_vars, loop_stack, sorted_lines, ip, _recurse_if)
+            return r[1] if r else ExecResult.ADVANCE
         if isinstance(parsed, AtRegStmt) and not self.locc_mode:
             raise ValueError("@register syntax requires LOCC mode (try: LOCC <n1> <n2>)")
         if isinstance(parsed, CompoundStmt):
@@ -1102,7 +1131,10 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
                 self._exec_line(sub, qc, loop_stack, sorted_lines, ip, run_vars)
             return ExecResult.ADVANCE
 
-        # 2. Control flow
+        # 2. Control flow (legacy regex path for extended statements: DATA, SELECT CASE, DO/LOOP, SUB, etc.)
+        if not isinstance(parsed, RawStmt):
+            # Already handled above for known types — skip redundant regex dispatch
+            pass
         def _recurse(s, ls, sl, i, rv):
             return self._exec_line(s, qc, ls, sl, i, rv)
         handled, result = self._exec_control_flow(

@@ -349,25 +349,26 @@ class LOCCMixin:
     def _locc_execute_program(self, sorted_lines):
         """Execute all LOCC program lines using numpy engine."""
         from qbasic_core.scope import Scope
+        from qbasic_core.statements import MeasureStmt
         loop_stack = []
         run_vars = Scope(self.variables)
+        # Pre-cache parsed statements and stripped strings for tight loop
+        _parsed = [self._get_parsed(ln) for ln in sorted_lines]
+        _stmts = [self.program[ln].strip() for ln in sorted_lines]
         ip = 0
         _iters = 0
-        while ip < len(sorted_lines):
+        n_lines = len(sorted_lines)
+        while ip < n_lines:
             _iters += 1
             if _iters > self._max_iterations:
                 raise RuntimeError(f"LOOP LIMIT ({self._max_iterations}) — possible infinite loop")
-            line_num = sorted_lines[ip]
-            stmt = self.program[line_num].strip()
-            parsed = self._get_parsed(line_num)
-            from qbasic_core.statements import MeasureStmt
-            if isinstance(parsed, MeasureStmt):
+            if isinstance(_parsed[ip], MeasureStmt):
                 ip += 1
                 continue
             try:
-                result = self._locc_exec_line(stmt, loop_stack, sorted_lines, ip, run_vars)
+                result = self._locc_exec_line(_stmts[ip], loop_stack, sorted_lines, ip, run_vars)
             except Exception as e:
-                raise RuntimeError(f"LINE {line_num}: {e}") from None
+                raise RuntimeError(f"LINE {sorted_lines[ip]}: {e}") from None
             if result is ExecResult.END:
                 break
             elif isinstance(result, int):
@@ -479,7 +480,14 @@ class LOCCMixin:
         return False
 
     def _locc_apply_gate(self, reg, gate_stmt):
-        """Parse and apply a gate to a LOCC register via numpy."""
+        """Parse and apply a gate to a LOCC register via numpy.
+
+        Uses LOCCRegBackend for standard gates. CTRL and INV modifiers
+        use apply_matrix directly since they need matrix construction.
+        """
+        from qbasic_core.backend import LOCCRegBackend
+        backend = LOCCRegBackend(self.locc, reg)
+        n_reg = self.locc.get_size(reg)
         expanded = self._expand_statement(gate_stmt)
         for stmt in expanded:
             tokens = self._tokenize_gate(stmt)
@@ -490,14 +498,13 @@ class LOCCMixin:
             if gate_name == 'BARRIER':
                 continue
 
-            # CTRL modifier: build controlled gate matrix and apply directly
+            # CTRL modifier
             m_ctrl = RE_CTRL.match(stmt)
             if m_ctrl:
-                inner_name = m_ctrl.group(1).upper()
-                inner_name = GATE_ALIASES.get(inner_name, inner_name)
+                inner_name = GATE_ALIASES.get(m_ctrl.group(1).upper(), m_ctrl.group(1).upper())
                 args = [a.strip() for a in m_ctrl.group(2).replace(',', ' ').split()]
-                ctrl_qubit = self._resolve_qubit(args[0])
-                target_qubits = [self._resolve_qubit(a) for a in args[1:]]
+                ctrl_qubit = self._resolve_qubit(args[0], n_qubits=n_reg)
+                target_qubits = [self._resolve_qubit(a, n_qubits=n_reg) for a in args[1:]]
                 inner_matrix = _np_gate_matrix(inner_name, ())
                 dim = inner_matrix.shape[0]
                 n_inner_qubits = int(np.log2(dim))
@@ -507,34 +514,25 @@ class LOCCMixin:
                         f"target qubit(s), got {len(target_qubits)} target(s)")
                 controlled = np.eye(2 * dim, dtype=complex)
                 controlled[dim:, dim:] = inner_matrix
-                all_qubits = [ctrl_qubit] + target_qubits
-                n_reg = self.locc.get_size(reg)
-                for q in all_qubits:
-                    if q < 0 or q >= n_reg:
-                        raise ValueError(f"QUBIT {q} OUT OF RANGE for {reg} (0-{n_reg-1})")
-                self.locc.apply_matrix(reg, controlled, all_qubits)
+                self.locc.apply_matrix(reg, controlled, [ctrl_qubit] + target_qubits)
                 continue
 
-            # INV modifier: apply conjugate transpose of the gate matrix
+            # INV modifier
             m_inv = RE_INV.match(stmt)
             if m_inv:
-                inner_name = m_inv.group(1).upper()
-                inner_name = GATE_ALIASES.get(inner_name, inner_name)
+                inner_name = GATE_ALIASES.get(m_inv.group(1).upper(), m_inv.group(1).upper())
                 inv_args = [a.strip() for a in m_inv.group(2).replace(',', ' ').split()]
                 info = self._gate_info(inner_name)
                 if info is None:
                     raise ValueError(f"UNKNOWN GATE: {inner_name}")
                 n_params, n_qubits_needed = info
                 params = [self.eval_expr(a) for a in inv_args[:n_params]]
-                qubits = [self._resolve_qubit(a) for a in inv_args[n_params:n_params+n_qubits_needed]]
+                qubits = [self._resolve_qubit(a, n_qubits=n_reg) for a in inv_args[n_params:n_params+n_qubits_needed]]
                 matrix = _np_gate_matrix(inner_name, tuple(params)).conj().T
-                n_reg = self.locc.get_size(reg)
-                for q in qubits:
-                    if q < 0 or q >= n_reg:
-                        raise ValueError(f"QUBIT {q} OUT OF RANGE for {reg} (0-{n_reg-1})")
                 self.locc.apply_matrix(reg, matrix, qubits)
                 continue
 
+            # Standard gate — through backend
             info = self._gate_info(gate_name)
             if info is None:
                 raise ValueError(f"UNKNOWN GATE: {gate_name}")
@@ -543,10 +541,6 @@ class LOCCMixin:
             if len(args) < n_params + n_qubits_needed:
                 raise ValueError(f"{gate_name} needs {n_params} params + "
                                  f"{n_qubits_needed} qubits")
-            params = [self.eval_expr(a) for a in args[:n_params]]
-            qubits = [self._resolve_qubit(a) for a in args[n_params:n_params+n_qubits_needed]]
-            n_reg = self.locc.get_size(reg)
-            for q in qubits:
-                if q < 0 or q >= n_reg:
-                    raise ValueError(f"QUBIT {q} OUT OF RANGE for {reg} (0-{n_reg-1})")
-            self.locc.apply(reg, gate_name, tuple(params), qubits)
+            params = tuple(self.eval_expr(a) for a in args[:n_params])
+            qubits = [self._resolve_qubit(a, n_qubits=n_reg) for a in args[n_params:n_params+n_qubits_needed]]
+            backend.apply_gate(gate_name, params, qubits)

@@ -2087,8 +2087,8 @@ class TestNewFixes(unittest.TestCase):
         t.num_qubits = 2
         t.program = {10: 'X 0', 20: 'MEAS 0 -> r', 30: 'MEASURE'}
         _, out = capture(t.cmd_run)
-        self.assertIn('WARNING', out)
-        self.assertIn('IF/THEN', out)
+        self.assertIn('MEAS r', out)
+        self.assertIn('deferred', out)
         self.assertIn('LOCC', out)
 
     def test_protocol_satisfied(self):
