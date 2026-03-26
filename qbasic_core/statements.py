@@ -319,12 +319,6 @@ class MergeStmt(Stmt):
 # ── Quantum ────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True, slots=True)
-class GateStmt(Stmt):
-    gate: str
-    params: tuple[str, ...]
-    qubits: tuple[str, ...]
-
-@dataclass(frozen=True, slots=True)
 class MeasStmt(Stmt):
     qubit_expr: str
     var: str

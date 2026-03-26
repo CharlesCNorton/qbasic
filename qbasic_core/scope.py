@@ -65,6 +65,3 @@ class Scope:
         val = self._runtime.pop(name, *default)
         self._persistent.pop(name, None)
         return val
-
-    def reset_runtime(self) -> None:
-        self._runtime.clear()

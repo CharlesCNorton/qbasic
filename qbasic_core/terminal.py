@@ -848,7 +848,7 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
     # use LOCC mode with SEND instead.
     MEAS_CIRCUIT_MODE_VALUE = 0
 
-    def _try_exec_meas(self, stmt: str, qc: 'QuantumCircuit', run_vars: dict) -> bool:
+    def _try_exec_meas(self, stmt: str, qc, run_vars: dict, *, backend=None) -> bool:
         """Handle MEAS qubit -> var (mid-circuit measurement)."""
         m = RE_MEAS.match(stmt)
         if not m:
@@ -856,10 +856,15 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         qubit = int(self._eval_with_vars(m.group(1), run_vars))
         var = m.group(2)
         if 0 <= qubit < self.num_qubits:
-            from qiskit.circuit import ClassicalRegister
-            cr = ClassicalRegister(1, f'meas_{var}')
-            qc.add_register(cr)
-            qc.measure(qubit, cr[0])
+            b = backend or qc
+            if hasattr(b, 'add_classical_register'):
+                cr = b.add_classical_register(f'meas_{var}')
+                b.measure(qubit, cr[0])
+            else:
+                from qiskit.circuit import ClassicalRegister
+                cr = ClassicalRegister(1, f'meas_{var}')
+                qc.add_register(cr)
+                qc.measure(qubit, cr[0])
             run_vars[var] = self.MEAS_CIRCUIT_MODE_VALUE
             self.variables[var] = self.MEAS_CIRCUIT_MODE_VALUE
             self.io.writeln(
@@ -867,14 +872,15 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
                 f"during circuit build). Use LOCC SEND for classical feedforward.")
         return True
 
-    def _try_exec_reset(self, stmt: str, qc: 'QuantumCircuit', run_vars: dict) -> bool:
+    def _try_exec_reset(self, stmt: str, qc, run_vars: dict, *, backend=None) -> bool:
         """Handle RESET qubit."""
         m = RE_RESET.match(stmt)
         if not m:
             return False
         qubit = int(self._eval_with_vars(m.group(1), run_vars))
         if 0 <= qubit < self.num_qubits:
-            qc.reset(qubit)
+            b = backend or qc
+            b.reset(qubit)
         return True
 
     def _try_exec_unitary(self, stmt: str) -> bool:
@@ -1009,15 +1015,9 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         self.variables[var] = 0
         return True
 
-    def _try_exec_measure_basis(self, stmt: str, qc: 'QuantumCircuit',
-                               run_vars: dict) -> bool:
-        """Handle MEASURE_X/Y/Z qubit — measurement in a non-computational basis.
-
-        MEASURE_X q: applies H then measures (X-basis measurement).
-        MEASURE_Y q: applies SDG then H then measures (Y-basis measurement).
-        MEASURE_Z q: standard computational-basis measurement (same as MEAS).
-        The result is stored in a variable named mx_<q>, my_<q>, or mz_<q>.
-        """
+    def _try_exec_measure_basis(self, stmt: str, qc, run_vars: dict,
+                               *, backend=None) -> bool:
+        """Handle MEASURE_X/Y/Z qubit — measurement in a non-computational basis."""
         m = RE_MEASURE_BASIS.match(stmt)
         if not m:
             return False
@@ -1025,18 +1025,25 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         qubit = int(self._eval_with_vars(m.group(2), run_vars))
         if qubit < 0 or qubit >= self.num_qubits:
             raise ValueError(f"QUBIT {qubit} OUT OF RANGE (0-{self.num_qubits-1})")
-        # Rotate into the requested basis before measurement
+        b = backend or qc
         if basis == 'X':
-            qc.h(qubit)
+            b.apply_gate('H', (), [qubit]) if hasattr(b, 'apply_gate') else qc.h(qubit)
         elif basis == 'Y':
-            qc.sdg(qubit)
-            qc.h(qubit)
-        # Z needs no rotation — already computational basis
-        from qiskit.circuit import ClassicalRegister
+            if hasattr(b, 'apply_gate'):
+                b.apply_gate('SDG', (), [qubit])
+                b.apply_gate('H', (), [qubit])
+            else:
+                qc.sdg(qubit)
+                qc.h(qubit)
         var = f"m{basis.lower()}_{qubit}"
-        cr = ClassicalRegister(1, f'meas_{var}')
-        qc.add_register(cr)
-        qc.measure(qubit, cr[0])
+        if hasattr(b, 'add_classical_register'):
+            cr = b.add_classical_register(f'meas_{var}')
+            b.measure(qubit, cr[0])
+        else:
+            from qiskit.circuit import ClassicalRegister
+            cr = ClassicalRegister(1, f'meas_{var}')
+            qc.add_register(cr)
+            qc.measure(qubit, cr[0])
         run_vars[var] = 0
         self.variables[var] = 0
         return True
@@ -1068,18 +1075,9 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
 
     _PAULI_TO_CONTROLLED = {'X': 'CX', 'Y': 'CY', 'Z': 'CZ'}
 
-    def _try_exec_syndrome(self, stmt: str, qc: 'QuantumCircuit',
-                           run_vars: dict) -> bool:
-        """Handle SYNDROME <stabilizer_spec> — measure a Pauli stabilizer.
-
-        Syntax: SYNDROME <pauli_string> <qubits> -> <var>
-        Example: SYNDROME ZZ 0 1 -> s0   (measures Z tensor Z on qubits 0,1)
-
-        Implements non-destructive stabilizer measurement using an ancilla:
-        1. Allocate an ancilla qubit (highest index).
-        2. For each Pauli in the string, apply controlled-Pauli from ancilla.
-        3. Measure the ancilla to get the syndrome bit.
-        """
+    def _try_exec_syndrome(self, stmt: str, qc, run_vars: dict,
+                           *, backend=None) -> bool:
+        """Handle SYNDROME — non-destructive stabilizer measurement via ancilla."""
         parsed = self._parse_syndrome(stmt, run_vars)
         if parsed is None:
             return False
@@ -1089,17 +1087,28 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
             raise ValueError(
                 f"Qubit {anc} needed as ancilla but appears in stabilizer. "
                 f"Increase QUBITS by 1.")
-        qc.h(anc)
-        for p, q in zip(pauli_str, qubits):
-            if p != 'I':
-                gate_method = getattr(qc, self._PAULI_TO_CONTROLLED[p].lower())
-                gate_method(anc, q)
-        qc.h(anc)
-        from qiskit.circuit import ClassicalRegister
-        cr = ClassicalRegister(1, f'synd_{var}')
-        qc.add_register(cr)
-        qc.measure(anc, cr[0])
-        qc.reset(anc)
+        b = backend or qc
+        if hasattr(b, 'apply_gate'):
+            b.apply_gate('H', (), [anc])
+            for p, q in zip(pauli_str, qubits):
+                if p != 'I':
+                    b.apply_gate(self._PAULI_TO_CONTROLLED[p], (), [anc, q])
+            b.apply_gate('H', (), [anc])
+            cr = b.add_classical_register(f'synd_{var}')
+            b.measure(anc, cr[0])
+            b.reset(anc)
+        else:
+            qc.h(anc)
+            for p, q in zip(pauli_str, qubits):
+                if p != 'I':
+                    gate_method = getattr(qc, self._PAULI_TO_CONTROLLED[p].lower())
+                    gate_method(anc, q)
+            qc.h(anc)
+            from qiskit.circuit import ClassicalRegister
+            cr = ClassicalRegister(1, f'synd_{var}')
+            qc.add_register(cr)
+            qc.measure(anc, cr[0])
+            qc.reset(anc)
         run_vars[var] = 0
         self.variables[var] = 0
         return True
@@ -1292,7 +1301,8 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
             return result
 
         # 3. Statement handlers
-        if self._try_stmt_handlers(stmt, qc, run_vars):
+        _backend = ctx.backend if ctx else None
+        if self._try_stmt_handlers(stmt, qc, run_vars, backend=_backend):
             return ExecResult.ADVANCE
 
         # 4. Colon-separated (legacy fallback for unparsed compound)
@@ -1326,13 +1336,13 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         _RESERVED_KEYWORDS
     )
 
-    def _try_stmt_handlers(self, stmt: str, qc: 'QuantumCircuit', run_vars: dict) -> bool:
+    def _try_stmt_handlers(self, stmt: str, qc, run_vars: dict, *, backend=None) -> bool:
         """Try statement-type handlers in order. Returns True if handled."""
         return (
-            self._try_exec_meas(stmt, qc, run_vars)
-            or self._try_exec_reset(stmt, qc, run_vars)
-            or self._try_exec_measure_basis(stmt, qc, run_vars)
-            or self._try_exec_syndrome(stmt, qc, run_vars)
+            self._try_exec_meas(stmt, qc, run_vars, backend=backend)
+            or self._try_exec_reset(stmt, qc, run_vars, backend=backend)
+            or self._try_exec_measure_basis(stmt, qc, run_vars, backend=backend)
+            or self._try_exec_syndrome(stmt, qc, run_vars, backend=backend)
             or self._try_exec_unitary(stmt)
             or self._try_exec_dim(stmt)
             or self._try_exec_redim(stmt)
@@ -1583,8 +1593,7 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         m_ctrl = RE_CTRL.match(stmt)
         if m_ctrl:
             from qiskit.circuit.library import (HGate, XGate, YGate, ZGate,
-                SGate, TGate, SdgGate, TdgGate, SXGate, RXGate, RYGate,
-                RZGate, PhaseGate, SwapGate, UGate)
+                SGate, TGate, SdgGate, TdgGate, SXGate, SwapGate)
             gate_name = m_ctrl.group(1).upper()
             args = [a.strip() for a in m_ctrl.group(2).replace(',', ' ').split()]
             ctrl_qubit = self._resolve_qubit(args[0])
@@ -1594,12 +1603,20 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
                 'S': SGate(), 'T': TGate(), 'SDG': SdgGate(), 'TDG': TdgGate(),
                 'SX': SXGate(), 'SWAP': SwapGate(),
             }
+            all_qubits = [ctrl_qubit] + target_qubits
             if gate_name in gate_map:
-                qc.append(gate_map[gate_name].control(1), [ctrl_qubit] + target_qubits)
+                gate = gate_map[gate_name].control(1)
+                if backend and hasattr(backend, 'append_controlled'):
+                    backend.append_controlled(gate, all_qubits)
+                else:
+                    qc.append(gate, all_qubits)
             elif gate_name in self._custom_gates:
                 from qiskit.circuit.library import UnitaryGate
-                qc.append(UnitaryGate(self._custom_gates[gate_name]).control(1),
-                          [ctrl_qubit] + target_qubits)
+                gate = UnitaryGate(self._custom_gates[gate_name]).control(1)
+                if backend and hasattr(backend, 'append_controlled'):
+                    backend.append_controlled(gate, all_qubits)
+                else:
+                    qc.append(gate, all_qubits)
             else:
                 raise ValueError(f"CTRL {gate_name}: gate not found")
             return
@@ -1609,7 +1626,6 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         if m_inv:
             gate_name = m_inv.group(1).upper()
             inv_args = m_inv.group(2)
-            # Build a minimal 1-gate circuit, invert it
             tokens = self._tokenize_gate(f"{gate_name} {inv_args}")
             gate_key = GATE_ALIASES.get(gate_name, gate_name)
             info = self._gate_info(gate_key)
@@ -1620,7 +1636,10 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
                 qubits_inv = [self._resolve_qubit(a) for a in t_args[n_params:n_params+n_qubits_needed]]
                 sub_qc = QuantumCircuit(max(qubits_inv) + 1)
                 self._apply_gate(sub_qc, gate_key, params, list(range(len(qubits_inv))))
-                qc.append(sub_qc.inverse(), qubits_inv)
+                if backend and hasattr(backend, 'append_inverse'):
+                    backend.append_inverse(sub_qc, qubits_inv)
+                else:
+                    qc.append(sub_qc.inverse(), qubits_inv)
             return
 
         # Parse: GATE [params] qubits

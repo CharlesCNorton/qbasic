@@ -33,6 +33,24 @@ class QiskitBackend:
     def reset(self, qubit: int) -> None:
         self._qc.reset(qubit)
 
+    def measure(self, qubit: int, classical_bit: Any) -> None:
+        self._qc.measure(qubit, classical_bit)
+
+    def add_classical_register(self, name: str, size: int = 1) -> Any:
+        from qiskit.circuit import ClassicalRegister
+        cr = ClassicalRegister(size, name)
+        self._qc.add_register(cr)
+        return cr
+
+    def h(self, qubit: int) -> None:
+        self._qc.h(qubit)
+
+    def append_inverse(self, sub_qc: Any, qubits: list[int]) -> None:
+        self._qc.append(sub_qc.inverse(), qubits)
+
+    def append_controlled(self, gate: Any, qubits: list[int]) -> None:
+        self._qc.append(gate, qubits)
+
     @property
     def qc(self) -> Any:
         return self._qc

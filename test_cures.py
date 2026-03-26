@@ -38,7 +38,7 @@ from qbasic_core.statements import (
     Stmt, RawStmt, RemStmt, MeasureStmt, EndStmt, ReturnStmt,
     BarrierStmt, WendStmt, GotoStmt, GosubStmt, ForStmt, NextStmt,
     WhileStmt, IfThenStmt, LetStmt, LetArrayStmt, PrintStmt,
-    GateStmt, MeasStmt, ResetStmt, SendStmt, ShareStmt, AtRegStmt,
+    MeasStmt, ResetStmt, SendStmt, ShareStmt, AtRegStmt,
     CompoundStmt,
 )
 

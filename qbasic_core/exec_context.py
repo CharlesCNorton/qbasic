@@ -20,8 +20,5 @@ class ExecContext:
     # Qiskit circuit-build path (None in LOCC path)
     qc: Any = None
 
-    # LOCC path (None in Qiskit path)
-    locc_engine: Any = None
-
     # Backend abstraction (QiskitBackend or LOCCRegBackend)
     backend: Any = None

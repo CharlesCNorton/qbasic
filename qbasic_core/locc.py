@@ -259,10 +259,26 @@ class LOCCMixin:
         Executes the deterministic prefix (before first SEND) once,
         snapshots the quantum state, then re-executes only the suffix
         (from first SEND onward) per shot. Falls back to full re-execution
-        if the prefix itself contains control flow that reaches SEND
-        non-linearly.
+        if the prefix contains jumps that could skip past the SEND.
         """
         from qbasic_core.scope import Scope
+        from qbasic_core.statements import SendStmt, GotoStmt, GosubStmt
+
+        # Check if prefix contains jumps — if so, fall back to full re-exec
+        first_send_ip = None
+        for i, ln in enumerate(sorted_lines):
+            p = self._get_parsed(ln)
+            if isinstance(p, SendStmt):
+                first_send_ip = i
+                break
+        has_prefix_jumps = False
+        if first_send_ip is not None and first_send_ip > 0:
+            for i in range(first_send_ip):
+                p = self._get_parsed(sorted_lines[i])
+                if isinstance(p, (GotoStmt, GosubStmt)):
+                    has_prefix_jumps = True
+                    break
+
         sizes_str = '+'.join(str(s) for s in self.locc.sizes)
         mode = "JOINT" if self.locc.joint else "SPLIT"
         shots = self.shots
@@ -272,15 +288,18 @@ class LOCCMixin:
                             f"{max_q}-qubit LOCC w/ SEND (per-shot re-execution)")
             shots = LOCC_SEND_SHOT_CAP
 
-        # Execute deterministic prefix once
+        # Execute deterministic prefix once (skip if jumps make it unsafe)
         self.locc.reset()
-        prefix_vars = dict(self.variables)
-        try:
-            send_ip = self._locc_execute_program(sorted_lines, stop_before_send=True,
-                                                  run_vars=Scope(prefix_vars))
-        except (RuntimeError, ValueError) as e:
-            self.io.writeln(f"?RUNTIME ERROR: {e}")
-            return
+        if has_prefix_jumps or first_send_ip == 0 or first_send_ip is None:
+            send_ip = 0  # no safe prefix — re-exec from start
+        else:
+            prefix_vars = dict(self.variables)
+            try:
+                send_ip = self._locc_execute_program(sorted_lines, stop_before_send=True,
+                                                      run_vars=Scope(prefix_vars))
+            except (RuntimeError, ValueError) as e:
+                self.io.writeln(f"?RUNTIME ERROR: {e}")
+                return
 
         # Snapshot state after prefix
         snap = self.locc.snapshot()
@@ -385,7 +404,7 @@ class LOCCMixin:
             run_vars = Scope(self.variables)
         ctx = ExecContext(
             sorted_lines=sorted_lines, ip=start_ip, run_vars=run_vars,
-            max_iterations=self._max_iterations, locc_engine=self.locc,
+            max_iterations=self._max_iterations,
         )
         _parsed = [self._get_parsed(ln) for ln in sorted_lines]
         _stmts = [self.program[ln].strip() for ln in sorted_lines]
