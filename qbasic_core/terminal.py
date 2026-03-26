@@ -695,7 +695,7 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
             self.io.writeln(f">> {line_num:5d}  {stmt}")
 
             # Execute it
-            result = self._exec_line(stmt, qc, ctx.loop_stack, sorted_lines, ctx.ip, ctx.run_vars, parsed)
+            result = self._exec_line(stmt, parsed=parsed, ctx=ctx)
 
             # Show state
             try:
@@ -826,7 +826,7 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
                 continue
 
             try:
-                result = self._exec_line(stmt, qc, ctx.loop_stack, ctx.sorted_lines, ctx.ip, ctx.run_vars, parsed)
+                result = self._exec_line(stmt, parsed=parsed, ctx=ctx)
             except Exception as e:
                 raise RuntimeError(f"LINE {line_num}: {e}") from None
 
@@ -1101,8 +1101,13 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         self.variables[var] = 0
         return True
 
-    def _exec_line(self, stmt, qc, loop_stack, sorted_lines, ip, run_vars, parsed=None):
+    def _exec_line(self, stmt, qc=None, loop_stack=None, sorted_lines=None,
+                   ip=0, run_vars=None, parsed=None, *, ctx=None):
         """Execute one program line.
+
+        Accepts either individual parameters (legacy) or ctx (ExecContext).
+        When ctx is provided, qc/loop_stack/sorted_lines/ip/run_vars are
+        read from ctx and the individual params are ignored.
 
         Evaluation order (deterministic, first match wins):
           1. Typed fast-path (parsed Stmt): BARRIER, REM, MEASURE, END, @REG, compound
@@ -1116,6 +1121,12 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
 
         Returns: int (jump target ip), ExecResult.ADVANCE, or ExecResult.END.
         """
+        if ctx is not None:
+            qc = ctx.qc
+            loop_stack = ctx.loop_stack
+            sorted_lines = ctx.sorted_lines
+            ip = ctx.ip
+            run_vars = ctx.run_vars
         from qbasic_core.statements import (
             BarrierStmt, RemStmt, MeasureStmt, EndStmt, ReturnStmt,
             CompoundStmt, AtRegStmt, GotoStmt, GosubStmt,
