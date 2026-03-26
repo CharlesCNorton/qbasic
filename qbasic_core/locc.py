@@ -358,7 +358,9 @@ class LOCCMixin:
                 raise RuntimeError(f"LOOP LIMIT ({self._max_iterations}) — possible infinite loop")
             line_num = sorted_lines[ip]
             stmt = self.program[line_num].strip()
-            if stmt.upper() == 'MEASURE':
+            parsed = self._get_parsed(line_num)
+            from qbasic_core.statements import MeasureStmt
+            if isinstance(parsed, MeasureStmt):
                 ip += 1
                 continue
             try:

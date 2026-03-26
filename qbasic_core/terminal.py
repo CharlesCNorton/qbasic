@@ -737,37 +737,44 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
 
     def build_circuit(self) -> tuple['QuantumCircuit', bool]:
         """Compile program lines into a QuantumCircuit. Returns (circuit, has_measure)."""
+        from qbasic_core.exec_context import ExecContext
+        from qbasic_core.statements import MeasureStmt
+        from qbasic_core.scope import Scope
+
         qc = QuantumCircuit(self.num_qubits)
-        sorted_lines = sorted(self.program.keys())
-        loop_stack = []
-        ip = 0
-        run_vars = dict(self.variables)
+        ctx = ExecContext(
+            sorted_lines=sorted(self.program.keys()),
+            ip=0,
+            run_vars=Scope(self.variables),
+            max_iterations=self._max_iterations,
+            qc=qc,
+        )
         has_measure = False
 
-        _iters = 0
-        while ip < len(sorted_lines):
-            _iters += 1
-            if _iters > self._max_iterations:
-                raise RuntimeError(f"LOOP LIMIT ({self._max_iterations}) — possible infinite loop")
-            line_num = sorted_lines[ip]
+        while ctx.ip < len(ctx.sorted_lines):
+            ctx.iteration_count += 1
+            if ctx.iteration_count > ctx.max_iterations:
+                raise RuntimeError(f"LOOP LIMIT ({ctx.max_iterations}) — possible infinite loop")
+            line_num = ctx.sorted_lines[ctx.ip]
             stmt = self.program[line_num].strip()
+            parsed = self._get_parsed(line_num)
 
-            if stmt.upper() == 'MEASURE':
+            if isinstance(parsed, MeasureStmt):
                 has_measure = True
-                ip += 1
+                ctx.ip += 1
                 continue
 
             try:
-                result = self._exec_line(stmt, qc, loop_stack, sorted_lines, ip, run_vars)
+                result = self._exec_line(stmt, qc, ctx.loop_stack, ctx.sorted_lines, ctx.ip, ctx.run_vars, parsed)
             except Exception as e:
                 raise RuntimeError(f"LINE {line_num}: {e}") from None
 
             if result is ExecResult.END:
                 break
             elif isinstance(result, int):
-                ip = result
+                ctx.ip = result
             else:
-                ip += 1
+                ctx.ip += 1
 
         return qc, has_measure
 
@@ -1018,19 +1025,46 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         self.variables[var] = 0
         return True
 
-    def _exec_line(self, stmt, qc, loop_stack, sorted_lines, ip, run_vars):
-        """Execute one program line. Returns new ip (int), ExecResult.ADVANCE, or ExecResult.END."""
-        upper = stmt.upper().strip()
+    def _exec_line(self, stmt, qc, loop_stack, sorted_lines, ip, run_vars, parsed=None):
+        """Execute one program line.
 
-        if upper == 'BARRIER':
-            qc.barrier()
+        Evaluation order (deterministic, first match wins):
+          1. Typed fast-path (parsed Stmt): BARRIER, REM, MEASURE, END, @REG, compound
+          2. Control flow: LET, PRINT, GOTO, GOSUB, FOR/NEXT, WHILE/WEND, IF/THEN,
+             DATA/READ, ON GOTO/GOSUB, SELECT CASE, DO/LOOP, EXIT, SUB/FUNCTION,
+             ON ERROR, ASSERT, STOP, SWAP, DEF FN, OPTION BASE
+          3. Statement handlers: MEAS, RESET, MEASURE_X/Y/Z, SYNDROME, UNITARY,
+             DIM, REDIM, ERASE, GET, INPUT, POKE, SYS, file I/O, PRINT USING
+          4. Colon-separated compound statements
+          5. Gate application (subroutine expansion + gate dispatch)
+
+        Returns: int (jump target ip), ExecResult.ADVANCE, or ExecResult.END.
+        """
+        from qbasic_core.statements import (
+            BarrierStmt, RemStmt, MeasureStmt, EndStmt,
+            CompoundStmt, AtRegStmt,
+        )
+
+        # 1. Typed fast-path
+        if parsed is None:
+            from qbasic_core.parser import parse_stmt
+            parsed = parse_stmt(stmt)
+        if isinstance(parsed, BarrierStmt):
+            if hasattr(qc, 'barrier'):
+                qc.barrier()
+            return ExecResult.ADVANCE
+        if isinstance(parsed, (RemStmt, MeasureStmt)):
+            return ExecResult.ADVANCE
+        if isinstance(parsed, EndStmt):
+            return ExecResult.END
+        if isinstance(parsed, AtRegStmt) and not self.locc_mode:
+            raise ValueError("@register syntax requires LOCC mode (try: LOCC <n1> <n2>)")
+        if isinstance(parsed, CompoundStmt):
+            for sub in parsed.parts:
+                self._exec_line(sub, qc, loop_stack, sorted_lines, ip, run_vars)
             return ExecResult.ADVANCE
 
-        # Register prefix requires LOCC mode
-        if upper.startswith('@') and not self.locc_mode:
-            raise ValueError("@register syntax requires LOCC mode (try: LOCC <n1> <n2>)")
-
-        # Shared control flow (LET, PRINT, GOTO, FOR/NEXT, WHILE/WEND, IF/THEN)
+        # 2. Control flow
         def _recurse(s, ls, sl, i, rv):
             return self._exec_line(s, qc, ls, sl, i, rv)
         handled, result = self._exec_control_flow(
@@ -1038,20 +1072,18 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         if handled:
             return result
 
-        # Statement-type handlers — each returns True if it handled the statement
-        for handler in self._stmt_handlers:
-            if handler(self, stmt, qc, run_vars):
-                return ExecResult.ADVANCE
+        # 3. Statement handlers
+        if self._try_stmt_handlers(stmt, qc, run_vars):
+            return ExecResult.ADVANCE
 
-        # Multi-statement line (colon separated)
+        # 4. Colon-separated (legacy fallback for unparsed compound)
         if ':' in stmt:
             for sub in self._split_colon_stmts(stmt):
                 self._exec_line(sub, qc, loop_stack, sorted_lines, ip, run_vars)
             return ExecResult.ADVANCE
 
-        # Variable substitution + gate application
-        resolved = self._substitute_vars(stmt, run_vars)
-        expanded = self._expand_statement(resolved)
+        # 5. Gate application
+        expanded = self._expand_statement(stmt)
         for gate_str in expanded:
             self._apply_gate_str(gate_str, qc)
 
@@ -1073,30 +1105,30 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         _RESERVED_KEYWORDS
     )
 
-    # Statement-type handler registry for _exec_line.
-    # Each entry is a callable(self, stmt, qc, run_vars) -> bool.
-    _stmt_handlers = [
-        lambda self, s, qc, rv: self._try_exec_meas(s, qc, rv),
-        lambda self, s, qc, rv: self._try_exec_reset(s, qc, rv),
-        lambda self, s, qc, rv: self._try_exec_measure_basis(s, qc, rv),
-        lambda self, s, qc, rv: self._try_exec_syndrome(s, qc, rv),
-        lambda self, s, _qc, _rv: self._try_exec_unitary(s),
-        lambda self, s, _qc, _rv: self._try_exec_dim(s),
-        lambda self, s, _qc, _rv: self._try_exec_redim(s),
-        lambda self, s, _qc, _rv: self._try_exec_erase(s),
-        lambda self, s, _qc, rv: self._try_exec_get(s, rv),
-        lambda self, s, _qc, rv: self._try_exec_input(s, rv),
-        lambda self, s, _qc, rv: self._try_exec_poke(s, rv),
-        lambda self, s, _qc, rv: self._try_exec_sys(s),
-        lambda self, s, _qc, rv: self._exec_print_file(s, rv),
-        lambda self, s, _qc, rv: self._exec_input_file(s, rv),
-        lambda self, s, _qc, rv: self._exec_lprint(s, rv),
-        lambda self, s, _qc, rv: self._try_exec_line_input(s, rv),
-        lambda self, s, _qc, rv: self._try_exec_let_str(s, rv),
-        lambda self, s, _qc, rv: self._try_exec_print_using(s, rv),
-        lambda self, s, _qc, rv: self._try_exec_open_close(s),
-        lambda self, s, _qc, rv: self._try_exec_dim_multi(s),
-    ]
+    def _try_stmt_handlers(self, stmt: str, qc: 'QuantumCircuit', run_vars: dict) -> bool:
+        """Try statement-type handlers in order. Returns True if handled."""
+        return (
+            self._try_exec_meas(stmt, qc, run_vars)
+            or self._try_exec_reset(stmt, qc, run_vars)
+            or self._try_exec_measure_basis(stmt, qc, run_vars)
+            or self._try_exec_syndrome(stmt, qc, run_vars)
+            or self._try_exec_unitary(stmt)
+            or self._try_exec_dim(stmt)
+            or self._try_exec_redim(stmt)
+            or self._try_exec_erase(stmt)
+            or self._try_exec_get(stmt, run_vars)
+            or self._try_exec_input(stmt, run_vars)
+            or self._try_exec_poke(stmt, run_vars)
+            or self._try_exec_sys(stmt)
+            or self._exec_print_file(stmt, run_vars)
+            or self._exec_input_file(stmt, run_vars)
+            or self._exec_lprint(stmt, run_vars)
+            or self._try_exec_line_input(stmt, run_vars)
+            or self._try_exec_let_str(stmt, run_vars)
+            or self._try_exec_print_using(stmt, run_vars)
+            or self._try_exec_open_close(stmt)
+            or self._try_exec_dim_multi(stmt)
+        )
 
     def _try_exec_poke(self, stmt: str, run_vars: dict) -> bool:
         m = RE_POKE.match(stmt)
@@ -1229,18 +1261,23 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
                 tokens[i] = str(merged[tok])
         return ''.join(tokens)
 
-    _MAX_EXPAND_DEPTH = 16
+    def _expand_statement(self, stmt, _call_stack: set[str] | None = None):
+        """Expand subroutines. Returns list of gate strings.
 
-    def _expand_statement(self, stmt, _depth: int = 0):
-        """Expand subroutines. Returns list of gate strings."""
-        if _depth > self._MAX_EXPAND_DEPTH:
-            raise RuntimeError(f"SUBROUTINE RECURSION LIMIT ({self._MAX_EXPAND_DEPTH}) — "
-                               f"possible infinite recursion")
+        Uses explicit call-stack tracking to detect recursion instead of
+        an arbitrary depth counter.
+        """
+        if _call_stack is None:
+            _call_stack = set()
         parts = stmt.split()
         word = parts[0].upper() if parts else ''
 
         if word not in self.subroutines:
             return [stmt]
+
+        if word in _call_stack:
+            raise RuntimeError(f"RECURSIVE SUBROUTINE: {word} calls itself")
+        _call_stack = _call_stack | {word}
 
         sub = self.subroutines[word]
         # Handle both legacy (list) and new (dict with params) format
@@ -1302,17 +1339,17 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
                         result.append(tok)
         return ' '.join(result)
 
-    def _apply_gate_str(self, stmt, qc):
+    def _apply_gate_str(self, stmt, qc, _call_stack=None):
         """Parse and apply a single gate string to the circuit."""
         stmt = stmt.strip()
         if not stmt:
             return
 
-        # Expand subroutines recursively so nested DEFs work
+        # Expand subroutines with call-stack tracking for recursion detection
         word = stmt.split()[0].upper() if stmt.split() else ''
         if word in self.subroutines:
-            for sub_stmt in self._expand_statement(stmt):
-                self._apply_gate_str(sub_stmt, qc)
+            for sub_stmt in self._expand_statement(stmt, _call_stack):
+                self._apply_gate_str(sub_stmt, qc, _call_stack)
             return
 
         upper = stmt.upper()
@@ -1392,11 +1429,6 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         params = [self.eval_expr(a) for a in args[:n_params]]
         qubits = [self._resolve_qubit(a) for a in args[n_params:n_params+n_qubits]]
 
-        # Validate qubits
-        for q in qubits:
-            if q < 0 or q >= self.num_qubits:
-                raise ValueError(f"QUBIT {q} OUT OF RANGE (0-{self.num_qubits-1})")
-
         # Apply gate
         self._apply_gate(qc, gate_name, params, qubits)
 
@@ -1408,9 +1440,13 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         stmt = RE_REG_INDEX.sub(r'\1[\2]', stmt)
         return stmt.split()
 
-    def _resolve_qubit(self, arg: str) -> int:
-        """Resolve a qubit argument: integer, register[index], or expression."""
-        # Register notation: name[index]
+    def _resolve_qubit(self, arg: str, *, n_qubits: int | None = None) -> int:
+        """Resolve a qubit argument and validate range.
+
+        Accepts: integer literal, register[index], or expression.
+        Validates against n_qubits (defaults to self.num_qubits).
+        """
+        limit = n_qubits if n_qubits is not None else self.num_qubits
         m = RE_REG_INDEX.match(arg)
         if m:
             name = m.group(1).lower()
@@ -1420,13 +1456,15 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
             start, size = self.registers[name]
             if idx >= size:
                 raise ValueError(f"{name}[{idx}] OUT OF RANGE (size={size})")
-            return start + idx
-
-        # Plain integer or expression
-        try:
-            return int(self.eval_expr(arg))
-        except Exception:
-            raise ValueError(f"CANNOT RESOLVE QUBIT: {arg}")
+            q = start + idx
+        else:
+            try:
+                q = int(self.eval_expr(arg))
+            except Exception:
+                raise ValueError(f"CANNOT RESOLVE QUBIT: {arg}")
+        if q < 0 or q >= limit:
+            raise ValueError(f"QUBIT {q} OUT OF RANGE (0-{limit-1})")
+        return q
 
     # Gate dispatch: name -> (method_name, arg_pattern)
     # arg_pattern: 'q' = qubits only, 'pq' = params then qubits, 'ppq' = 3-param then qubit
@@ -1767,6 +1805,11 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
           Arrays: arr(i) or arr[i]
           Example: LET theta = PI/4 + asin(0.5)
         """))
+        # Auto-generated command reference from registry
+        all_cmds = sorted(set(self._CMD_NO_ARG.keys()) | set(self._CMD_WITH_ARG.keys()))
+        all_gates = sorted(g for g in GATE_TABLE if g not in GATE_ALIASES)
+        print(f"        ALL COMMANDS: {', '.join(all_cmds)}")
+        print(f"        ALL GATES: {', '.join(all_gates)}")
 
     # ── Banner ────────────────────────────────────────────────────────
 

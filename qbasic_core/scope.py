@@ -34,6 +34,25 @@ class Scope:
         self._runtime[name] = value
         self._persistent[name] = value
 
+    def keys(self):
+        return set(self._persistent.keys()) | set(self._runtime.keys())
+
+    def items(self):
+        merged = {**self._persistent, **self._runtime}
+        return merged.items()
+
+    def values(self):
+        merged = {**self._persistent, **self._runtime}
+        return merged.values()
+
+    def update(self, other):
+        if isinstance(other, dict):
+            for k, v in other.items():
+                self[k] = v
+        elif isinstance(other, Scope):
+            for k, v in other.items():
+                self[k] = v
+
     def as_dict(self) -> dict[str, Any]:
         """Merged view for expression evaluation."""
         return {**self._persistent, **self._runtime}

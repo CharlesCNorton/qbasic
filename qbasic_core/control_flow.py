@@ -64,16 +64,10 @@ class ControlFlowMixin:
         # Evaluate SPC(n) and TAB(n) inline
         import re as _re
         def _replace_spc(m_spc):
-            try:
-                n = int(self._eval_with_vars(m_spc.group(1), run_vars))
-            except Exception:
-                n = 1
+            n = int(self._eval_with_vars(m_spc.group(1), run_vars))
             return ' ' * max(0, n)
         def _replace_tab(m_tab):
-            try:
-                n = int(self._eval_with_vars(m_tab.group(1), run_vars))
-            except Exception:
-                n = 1
+            n = int(self._eval_with_vars(m_tab.group(1), run_vars))
             return ' ' * max(0, n)
         text = _re.sub(r'\bSPC\s*\(([^)]+)\)', _replace_spc, text, flags=_re.IGNORECASE)
         text = _re.sub(r'\bTAB\s*\(([^)]+)\)', _replace_tab, text, flags=_re.IGNORECASE)
@@ -139,6 +133,7 @@ class ControlFlowMixin:
         except (OverflowError, ValueError):
             pass
         run_vars[var] = start
+        self.variables[var] = start
         loop_stack.append({'var': var, 'current': start, 'end': end,
                            'step': step, 'return_ip': ip})
         return True, ExecResult.ADVANCE
@@ -158,6 +153,7 @@ class ControlFlowMixin:
         if (loop['step'] > 0 and loop['current'] <= loop['end']) or \
            (loop['step'] < 0 and loop['current'] >= loop['end']):
             run_vars[var] = loop['current']
+            self.variables[var] = loop['current']
             return True, loop['return_ip'] + 1
         else:
             loop_stack.pop()
