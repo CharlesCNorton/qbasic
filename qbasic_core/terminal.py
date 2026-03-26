@@ -397,9 +397,14 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         self.subroutines.clear()
         self.registers.clear()
         self.variables.clear()
+        self.arrays.clear()
+        if hasattr(self, '_array_dims'):
+            self._array_dims.clear()
         self.last_counts = None
         self.last_sv = None
         self.last_circuit = None
+        self._circuit_cache_key = None
+        self._circuit_cache = None
         if not silent:
             print("READY")
 
@@ -663,28 +668,33 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
             print("NOTHING TO STEP")
             return
 
+        from qbasic_core.exec_context import ExecContext
+        from qbasic_core.scope import Scope
+
         sorted_lines = sorted(self.program.keys())
         qc = QuantumCircuit(self.num_qubits)
-        loop_stack = []
-        ip = 0
-        step_vars = dict(self.variables)
+        ctx = ExecContext(
+            sorted_lines=sorted_lines, ip=0,
+            run_vars=Scope(self.variables),
+            max_iterations=self._max_iterations, qc=qc,
+        )
 
         print(f"STEP MODE — {len(sorted_lines)} lines, {self.num_qubits} qubits")
         print("Press ENTER to advance, Q to quit\n")
 
-        _iters = 0
-        while ip < len(sorted_lines):
-            _iters += 1
-            if _iters > self._max_iterations:
-                raise RuntimeError(f"LOOP LIMIT ({self._max_iterations}) — possible infinite loop")
-            line_num = sorted_lines[ip]
+        while ctx.ip < len(sorted_lines):
+            ctx.iteration_count += 1
+            if ctx.iteration_count > ctx.max_iterations:
+                raise RuntimeError(f"LOOP LIMIT ({ctx.max_iterations}) — possible infinite loop")
+            line_num = sorted_lines[ctx.ip]
             stmt = self.program[line_num]
+            parsed = self._get_parsed(line_num)
 
             # Display current line
             print(f">> {line_num:5d}  {stmt}")
 
             # Execute it
-            result = self._exec_line(stmt, qc, loop_stack, sorted_lines, ip, step_vars)
+            result = self._exec_line(stmt, qc, ctx.loop_stack, sorted_lines, ctx.ip, ctx.run_vars, parsed)
 
             # Show state
             try:
@@ -708,9 +718,9 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
                 return
 
             if isinstance(result, int):
-                ip = result
+                ctx.ip = result
             else:
-                ip += 1
+                ctx.ip += 1
 
         print("DONE")
 
@@ -747,14 +757,32 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
 
     def _validate_program(self, sorted_lines: list[int]) -> None:
         """Pre-execution validation. Catches structural errors before running."""
-        from qbasic_core.statements import GotoStmt, GosubStmt
+        from qbasic_core.statements import (
+            GotoStmt, GosubStmt, ForStmt, NextStmt, WhileStmt, WendStmt,
+            DoStmt, LoopStmt, SubStmt, EndSubStmt, FunctionStmt, EndFunctionStmt,
+        )
         line_set = set(sorted_lines)
+        for_depth = 0
+        while_depth = 0
+        do_depth = 0
         for ln in sorted_lines:
             parsed = self._get_parsed(ln)
             if isinstance(parsed, GotoStmt) and parsed.target not in line_set:
                 raise RuntimeError(f"LINE {ln}: GOTO {parsed.target} — target line not found")
             if isinstance(parsed, GosubStmt) and parsed.target not in line_set:
                 raise RuntimeError(f"LINE {ln}: GOSUB {parsed.target} — target line not found")
+            if isinstance(parsed, ForStmt):
+                for_depth += 1
+            elif isinstance(parsed, NextStmt):
+                for_depth -= 1
+            elif isinstance(parsed, WhileStmt):
+                while_depth += 1
+            elif isinstance(parsed, WendStmt):
+                while_depth -= 1
+            elif isinstance(parsed, DoStmt):
+                do_depth += 1
+            elif isinstance(parsed, LoopStmt):
+                do_depth -= 1
 
     # ── Circuit Building ──────────────────────────────────────────────
 
@@ -763,14 +791,17 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         from qbasic_core.exec_context import ExecContext
         from qbasic_core.statements import MeasureStmt
         from qbasic_core.scope import Scope
+        from qbasic_core.backend import QiskitBackend
 
         qc = QuantumCircuit(self.num_qubits)
+        backend = QiskitBackend(qc, self._apply_gate)
         ctx = ExecContext(
             sorted_lines=sorted(self.program.keys()),
             ip=0,
             run_vars=Scope(self.variables),
             max_iterations=self._max_iterations,
             qc=qc,
+            backend=backend,
         )
         has_measure = False
 
@@ -894,34 +925,42 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         return True
 
     def _try_exec_get(self, stmt: str, run_vars: dict) -> bool:
-        """Handle GET var — single keypress input without enter."""
+        """Handle GET var — single keypress input without enter.
+
+        Falls back to reading one character from self.io.read_line
+        when not running in a terminal (batch mode, tests, etc.).
+        """
         from qbasic_core.engine import RE_GET
         m = RE_GET.match(stmt)
         if not m:
             return False
         var = m.group(1)
+        ch = ''
         try:
             import sys as _sys
-            if _sys.platform == 'win32':
-                import msvcrt
-                ch = msvcrt.getwch()
+            if _sys.stdin.isatty():
+                if _sys.platform == 'win32':
+                    import msvcrt
+                    ch = msvcrt.getwch()
+                else:
+                    import tty, termios
+                    fd = _sys.stdin.fileno()
+                    old_settings = termios.tcgetattr(fd)
+                    try:
+                        tty.setraw(fd)
+                        ch = _sys.stdin.read(1)
+                    finally:
+                        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
             else:
-                import tty, termios
-                fd = _sys.stdin.fileno()
-                old = termios.tcgetattr(fd)
-                try:
-                    tty.setraw(fd)
-                    ch = _sys.stdin.read(1)
-                finally:
-                    termios.tcsetattr(fd, termios.TCSADRAIN, old)
-            if var.endswith('$'):
-                run_vars[var] = ch
-                self.variables[var] = ch
-            else:
-                run_vars[var] = float(ord(ch))
-                self.variables[var] = float(ord(ch))
+                line = self.io.read_line('')
+                ch = line[0] if line else ''
         except (EOFError, KeyboardInterrupt, OSError):
-            run_vars[var] = '' if var.endswith('$') else 0
+            ch = ''
+        if var.endswith('$'):
+            run_vars[var] = ch
+            self.variables[var] = ch
+        else:
+            run_vars[var] = float(ord(ch)) if ch else 0.0
             self.variables[var] = run_vars[var]
         return True
 
@@ -1248,22 +1287,24 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         fmt = m.group(1)
         vals = [self._eval_with_vars(v.strip(), run_vars)
                 for v in m.group(2).split(',') if v.strip()]
-        # Simple format: # for digit, . for decimal point
         result = fmt
         for val in vals:
-            n_hash = result.count('#')
-            if n_hash > 0:
-                if '.' in result:
-                    decimal = result.count('#') - result.index('.') if '.' in result else 0
-                    formatted = f"{val:{n_hash}.{max(0, n_hash - result.index('#'))}f}"
-                else:
-                    formatted = f"{val:{n_hash}.0f}"
-                # Replace first run of # with formatted value
-                idx = result.find('#')
-                end = idx
-                while end < len(result) and result[end] in '#.':
-                    end += 1
-                result = result[:idx] + formatted.rjust(end - idx) + result[end:]
+            # Find the next format field (run of # and . characters)
+            idx = result.find('#')
+            if idx < 0:
+                break
+            end = idx
+            while end < len(result) and result[end] in '#.':
+                end += 1
+            field = result[idx:end]
+            field_width = len(field)
+            dot_pos = field.find('.')
+            if dot_pos >= 0:
+                decimals = len(field) - dot_pos - 1
+                formatted = f"{val:{field_width}.{decimals}f}"
+            else:
+                formatted = f"{val:{field_width}.0f}"
+            result = result[:idx] + formatted.rjust(field_width) + result[end:]
         self.io.writeln(result)
         return True
 
@@ -1917,7 +1958,7 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         ╚██████╔╝██████╔╝██║  ██║███████║██║╚██████╗
          ╚══▀▀═╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝╚═╝ ╚═════╝
 
-        Quantum BASIC v0.3.0
+        Quantum BASIC
         Python {platform.python_version()} | Qiskit {qver} | {ram_str}{gpu_str}
         {self.num_qubits} qubits | {self.shots} shots | max ~{max_q} qubits
         Type HELP for commands, DEMO LIST for demos.

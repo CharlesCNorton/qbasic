@@ -378,6 +378,45 @@ class LOCCMixin:
 
     def _locc_exec_line(self, stmt, loop_stack, sorted_lines, ip, run_vars):
         """Execute one line in LOCC mode."""
+        from qbasic_core.parser import parse_stmt
+        from qbasic_core.statements import (
+            SendStmt, ShareStmt, AtRegStmt, CompoundStmt,
+            RemStmt, MeasureStmt, EndStmt, BarrierStmt, ReturnStmt,
+        )
+        parsed = parse_stmt(stmt)
+
+        # Fast-path for terminals
+        if isinstance(parsed, (RemStmt, MeasureStmt, BarrierStmt)):
+            return ExecResult.ADVANCE
+        if isinstance(parsed, EndStmt):
+            return ExecResult.END
+        if isinstance(parsed, ReturnStmt):
+            if not self._gosub_stack:
+                raise RuntimeError("RETURN WITHOUT GOSUB")
+            return self._gosub_stack.pop()
+        if isinstance(parsed, CompoundStmt):
+            for sub in parsed.parts:
+                self._locc_exec_line(sub, loop_stack, sorted_lines, ip, run_vars)
+            return ExecResult.ADVANCE
+
+        # Fast-path for LOCC-specific statements
+        if isinstance(parsed, SendStmt):
+            qubit = int(self.eval_expr(parsed.qubit_expr))
+            outcome = self.locc.send(parsed.reg, qubit)
+            run_vars[parsed.var] = outcome
+            self.variables[parsed.var] = outcome
+            self.locc.classical[parsed.var] = outcome
+            return ExecResult.ADVANCE
+        if isinstance(parsed, ShareStmt):
+            self.locc.share(parsed.reg1, parsed.q1, parsed.reg2, parsed.q2)
+            return ExecResult.ADVANCE
+        if isinstance(parsed, AtRegStmt):
+            if self._locc_try_special(parsed.reg, parsed.inner, run_vars):
+                return ExecResult.ADVANCE
+            self._locc_apply_gate(parsed.reg, parsed.inner)
+            return ExecResult.ADVANCE
+
+        # Control flow
         handled, result = self._exec_control_flow(
             stmt, loop_stack, sorted_lines, ip, run_vars,
             lambda s, ls, sl, i, rv: self._locc_exec_line(s, ls, sl, i, rv))
@@ -389,26 +428,26 @@ class LOCCMixin:
                 self._locc_exec_line(sub, loop_stack, sorted_lines, ip, run_vars)
             return ExecResult.ADVANCE
 
-        resolved = self._substitute_vars(stmt, run_vars)
-
-        m = RE_SEND.match(resolved)
+        # Legacy regex fallback
+        m = RE_SEND.match(stmt)
         if m:
             reg = m.group(1).upper()
             qubit = int(self.eval_expr(m.group(2)))
             var = m.group(3)
             outcome = self.locc.send(reg, qubit)
             run_vars[var] = outcome
+            self.variables[var] = outcome
             self.locc.classical[var] = outcome
             return ExecResult.ADVANCE
 
-        m = RE_SHARE.match(resolved)
+        m = RE_SHARE.match(stmt)
         if m:
             reg1, q1 = m.group(1).upper(), int(m.group(2))
             reg2, q2 = m.group(3).upper(), int(m.group(4))
             self.locc.share(reg1, q1, reg2, q2)
             return ExecResult.ADVANCE
 
-        m = RE_AT_REG_LINE.match(resolved)
+        m = RE_AT_REG_LINE.match(stmt)
         if m:
             reg = m.group(1).upper()
             gate_stmt = m.group(2).strip()

@@ -93,9 +93,10 @@ class SubroutineMixin:
             return None
         if self._call_stack:
             frame = self._call_stack.pop()
-            ret_val = self.variables.get(frame.get('func_name', ''), 0)
+            func_name = frame.get('func_name', '')
+            ret_val = self.variables.get(func_name, 0) if func_name else 0
             self._pop_scope()
-            if frame.get('func_name'):
+            if func_name:
                 self.variables['_FUNC_RETURN'] = ret_val
             return True, frame['return_ip']
         return True, ExecResult.ADVANCE
@@ -127,7 +128,8 @@ class SubroutineMixin:
     def _invoke_function(self, name: str, args: list[float],
                          sorted_lines: list[int]) -> Any:
         """Execute a FUNCTION block and return its value.
-        Called from the expression evaluator."""
+        Called from the expression evaluator.
+        Uses _exec_control_flow for full statement support inside function bodies."""
         uname = name.upper()
         if uname not in self._func_defs:
             raise ValueError(f"UNDEFINED FUNCTION: {name}")
@@ -139,7 +141,6 @@ class SubroutineMixin:
         if uname in self._static_vars:
             for k, v in self._static_vars[uname].items():
                 self.variables[k] = v
-        # Execute function body line by line
         ip = func['start_ip']
         loop_stack: list[dict[str, Any]] = []
         run_vars = dict(self.variables)
@@ -151,16 +152,20 @@ class SubroutineMixin:
             stmt = self.program[sorted_lines[ip]].strip()
             if RE_END_FUNCTION.match(stmt):
                 break
-            # Handle LET for return value
-            upper = stmt.upper()
-            if upper.startswith('LET '):
-                from qbasic_core.engine import RE_LET_VAR
-                m = RE_LET_VAR.match(stmt)
-                if m:
-                    vname = m.group(1)
-                    val = self._eval_with_vars(m.group(2), run_vars)
-                    run_vars[vname] = val
-                    self.variables[vname] = val
+            # Use full control-flow dispatch for all statement types
+            def _fn_recurse(s, ls, sl, i, rv):
+                handled, result = self._exec_control_flow(s, ls, sl, i, rv, _fn_recurse)
+                if handled:
+                    return result
+                return None
+            handled, result = self._exec_control_flow(
+                stmt, loop_stack, sorted_lines, ip, run_vars, _fn_recurse)
+            if handled:
+                if isinstance(result, int):
+                    ip = result
+                    continue
+                elif result is ExecResult.END:
+                    break
             ip += 1
         ret_val = self.variables.get(uname, run_vars.get(uname, 0))
         self._pop_scope()

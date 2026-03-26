@@ -57,5 +57,14 @@ class Scope:
         """Merged view for expression evaluation."""
         return {**self._persistent, **self._runtime}
 
+    def __delitem__(self, name: str) -> None:
+        self._runtime.pop(name, None)
+        self._persistent.pop(name, None)
+
+    def pop(self, name: str, *default):
+        val = self._runtime.pop(name, *default)
+        self._persistent.pop(name, None)
+        return val
+
     def reset_runtime(self) -> None:
         self._runtime.clear()

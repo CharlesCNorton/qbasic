@@ -39,12 +39,9 @@ class ScreenMixin:
     def _auto_display(self) -> None:
         """Display results using current SCREEN mode after RUN."""
         mode = getattr(self, '_screen_mode', 0)
-        if mode == 0:
-            return  # text mode: default behavior (histogram already shown by cmd_run)
-        if mode == 1:
-            if self.last_counts:
-                self.print_histogram(self.last_counts)
-        elif mode == 2:
+        if mode <= 1:
+            return  # text/histogram mode: histogram already shown by cmd_run
+        if mode == 2:
             if self.last_sv is not None:
                 self._print_statevector(self.last_sv)
         elif mode == 3:
