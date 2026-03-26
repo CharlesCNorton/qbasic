@@ -348,8 +348,9 @@ class LOCCMixin:
 
     def _locc_execute_program(self, sorted_lines):
         """Execute all LOCC program lines using numpy engine."""
+        from qbasic_core.scope import Scope
         loop_stack = []
-        run_vars = dict(self.variables)
+        run_vars = Scope(self.variables)
         ip = 0
         _iters = 0
         while ip < len(sorted_lines):

@@ -160,6 +160,8 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         # I/O and parse cache
         self.io = StdIOPort()
         self._parsed = {}  # {line_num: Stmt}
+        self._circuit_cache_key = None
+        self._circuit_cache = None  # (qc_transpiled, backend)
         # Subsystem initialization
         self._start_time = time.time()
         self._init_memory()
@@ -597,13 +599,10 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
 
         self.last_circuit = qc
 
-        # Run with shots
+        # Run with shots (cache transpiled circuit if program unchanged)
         try:
             method = self.sim_method
             if method == 'automatic':
-                # Auto-select best method.
-                # Stabilizer is only valid for Clifford circuits without
-                # Kraus-based noise models (amplitude_damping, phase_flip).
                 if self.num_qubits > 28:
                     method = 'matrix_product_state'
                 elif not self._noise_model and self._is_clifford(qc):
@@ -613,8 +612,18 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
                 backend_opts['device'] = 'GPU'
             if self._noise_model:
                 backend_opts['noise_model'] = self._noise_model
-            backend = AerSimulator(**backend_opts)
-            qc_t = transpile(qc, backend)
+            cache_key = (
+                tuple(sorted(self.program.items())),
+                self.num_qubits, method, self.sim_device,
+                id(self._noise_model),
+            )
+            if self._circuit_cache_key == cache_key and self._circuit_cache is not None:
+                qc_t, backend = self._circuit_cache
+            else:
+                backend = AerSimulator(**backend_opts)
+                qc_t = transpile(qc, backend)
+                self._circuit_cache_key = cache_key
+                self._circuit_cache = (qc_t, backend)
             result = backend.run(qc_t, shots=self.shots).result()
             self.last_counts = dict(result.get_counts())
         except Exception as e:
@@ -705,7 +714,10 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         print("DONE")
 
     def run_immediate(self, line: str) -> None:
-        """Execute a single gate command immediately."""
+        """Execute a single gate command immediately.
+
+        Uses the same _exec_line pipeline as cmd_run for consistency.
+        """
         # In LOCC mode, handle @register prefix via the numpy engine
         if self.locc_mode and self.locc:
             m = RE_AT_REG_LINE.match(line)
@@ -721,10 +733,9 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         if line.strip().startswith('@'):
             print("?@register syntax requires LOCC mode (try: LOCC <n1> <n2>)")
             return
+        # Build and execute through the same gate pipeline as cmd_run
         qc = QuantumCircuit(self.num_qubits)
-        expanded = self._expand_statement(line)
-        for stmt in expanded:
-            self._apply_gate_str(stmt, qc)
+        self._exec_line(line, qc, [], [0], 0, dict(self.variables))
         qc.save_statevector()
         backend = AerSimulator(method='statevector')
         result = backend.run(transpile(qc, backend)).result()
