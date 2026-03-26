@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import hashlib
 from typing import Any
 
@@ -37,7 +38,7 @@ class ProgramMgmtMixin:
         self.io.writeln(f"AUTO {self._auto_line}, {self._auto_step} — type . to stop")
         while self._auto_mode:
             try:
-                line = input(f'{self._auto_line} ').rstrip()
+                line = self.io.read_line(f'{self._auto_line} ').rstrip()
                 if line == '.':
                     self._auto_mode = False
                     break
@@ -63,7 +64,7 @@ class ProgramMgmtMixin:
         current = self.program[num]
         self.io.writeln(f"  {num} {current}")
         try:
-            new_content = input(f'{num} ').rstrip()
+            new_content = self.io.read_line(f'{num} ').rstrip()
             if new_content:
                 self.program[num] = new_content
                 self.io.writeln(f"  UPDATED {num}")
@@ -164,7 +165,6 @@ class ProgramMgmtMixin:
 
     @staticmethod
     def _parse_range_to(rest: str) -> tuple[int, int, int] | None:
-        import re
         m = re.match(r'(\d+)\s*-\s*(\d+)\s+TO\s+(\d+)', rest, re.IGNORECASE)
         if not m:
             return None
@@ -187,7 +187,6 @@ class ProgramMgmtMixin:
 
     def cmd_replace(self, rest: str) -> None:
         """REPLACE "old" WITH "new" — find and replace in program."""
-        import re
         m = re.match(r'"([^"]+)"\s+WITH\s+"([^"]*)"', rest, re.IGNORECASE)
         if not m:
             self.io.writeln('?USAGE: REPLACE "old" WITH "new"')

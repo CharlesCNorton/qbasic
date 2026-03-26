@@ -1,13 +1,22 @@
 """QBASIC display — histograms, statevector, Bloch sphere rendering."""
 
+import sys
 import math
 import numpy as np
 
 from qbasic_core.engine import (
     MAX_HISTOGRAM_STATES, MAX_DISPLAY_AMPLITUDES,
     HISTOGRAM_BAR_WIDTH, AMPLITUDE_THRESHOLD,
-    _RICH, _console, _RichTable,
+    _RICH, _RichTable,
 )
+
+
+def _get_console():
+    """Get a Rich console bound to current sys.stdout (test-safe)."""
+    if _RICH:
+        from rich.console import Console
+        return Console(file=sys.stdout, highlight=False)
+    return None
 
 
 class DisplayMixin:
@@ -22,7 +31,7 @@ class DisplayMixin:
         sorted_counts = sorted(counts.items(), key=lambda x: -x[1])
         display = sorted_counts[:MAX_HISTOGRAM_STATES]
 
-        if _RICH and _console:
+        if _RICH:
             self._print_histogram_rich(display, sorted_counts, total)
         else:
             self._print_histogram_plain(display, sorted_counts, total)
@@ -39,11 +48,11 @@ class DisplayMixin:
 
         max_count = max(c for _, c in display) if display else 1
         if len(sorted_counts) > MAX_HISTOGRAM_STATES:
-            _console.print(
+            _get_console().print(
                 f"\n  [dim]Showing top {MAX_HISTOGRAM_STATES} of "
                 f"{len(sorted_counts)} outcomes:[/dim]\n")
         else:
-            _console.print()
+            _get_console().print()
 
         for state, count in display:
             pct = 100 * count / total
@@ -62,8 +71,8 @@ class DisplayMixin:
                 "...", str(rest_count),
                 f"{100*rest_count/total:5.1f}%", "[dim](remaining)[/dim]")
 
-        _console.print(table)
-        _console.print()
+        _get_console().print(table)
+        _get_console().print()
 
     def _print_histogram_plain(self, display: list, sorted_counts: list,
                                total: int) -> None:
@@ -94,13 +103,13 @@ class DisplayMixin:
         sv = np.ascontiguousarray(sv).ravel()
         n = n_qubits if n_qubits is not None else self.num_qubits
 
-        if _RICH and _console:
+        if _RICH:
             table = _RichTable(show_header=True, header_style="bold cyan",
                                box=None, padding=(0, 1))
             table.add_column("State", justify="right", style="bold")
             table.add_column("Amplitude", justify="right")
             table.add_column("P", justify="right")
-            _console.print(f"\n  [bold]Statevector ({n} qubits):[/bold]")
+            _get_console().print(f"\n  [bold]Statevector ({n} qubits):[/bold]")
             count = 0
             for i, amp in enumerate(sv):
                 if abs(amp) > AMPLITUDE_THRESHOLD:
@@ -117,8 +126,8 @@ class DisplayMixin:
                         if remaining:
                             table.add_row("...", "", f"+{remaining} more")
                         break
-            _console.print(table)
-            _console.print()
+            _get_console().print(table)
+            _get_console().print()
             return
 
         self.io.writeln(f"\n  Statevector ({n} qubits):")

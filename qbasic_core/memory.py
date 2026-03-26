@@ -274,7 +274,7 @@ class MemoryMixin:
         self.io.writeln("MONITOR — type address to PEEK, addr=val to POKE, Q to quit")
         while True:
             try:
-                line = input('* ').strip()
+                line = self.io.read_line('* ').strip()
             except (KeyboardInterrupt, EOFError):
                 self.io.writeln('')
                 break

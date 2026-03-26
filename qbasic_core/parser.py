@@ -40,7 +40,7 @@ from qbasic_core.statements import (
     PokeStmt, SysStmt, UnitaryStmt,
     OpenStmt, CloseStmt, PrintFileStmt, InputFileStmt, LprintStmt,
     ScreenStmt, ColorStmt, LocateStmt, ChainStmt, MergeStmt,
-    GateStmt, MeasStmt, ResetStmt, MeasureBasisStmt, SyndromeStmt,
+    MeasStmt, ResetStmt, MeasureBasisStmt, SyndromeStmt,
     SendStmt, ShareStmt, AtRegStmt,
     CompoundStmt,
 )
