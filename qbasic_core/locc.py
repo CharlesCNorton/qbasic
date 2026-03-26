@@ -254,15 +254,37 @@ class LOCCMixin:
             self._locc_run_vectorized(sorted_lines, has_measure)
 
     def _locc_run_with_send(self, sorted_lines, has_measure):
-        """LOCC execution with SEND — re-executes per shot for Born-rule branching."""
+        """LOCC execution with SEND — prefix/suffix split optimization.
+
+        Executes the deterministic prefix (before first SEND) once,
+        snapshots the quantum state, then re-executes only the suffix
+        (from first SEND onward) per shot. Falls back to full re-execution
+        if the prefix itself contains control flow that reaches SEND
+        non-linearly.
+        """
+        from qbasic_core.scope import Scope
         sizes_str = '+'.join(str(s) for s in self.locc.sizes)
         mode = "JOINT" if self.locc.joint else "SPLIT"
         shots = self.shots
         max_q = max(self.locc.sizes)
         if max_q > LOCC_SEND_QUBIT_THRESHOLD and shots > LOCC_SEND_SHOT_CAP:
-            print(f"  WARNING: capping at {LOCC_SEND_SHOT_CAP} shots for "
-                  f"{max_q}-qubit LOCC w/ SEND (per-shot re-execution)")
+            self.io.writeln(f"  WARNING: capping at {LOCC_SEND_SHOT_CAP} shots for "
+                            f"{max_q}-qubit LOCC w/ SEND (per-shot re-execution)")
             shots = LOCC_SEND_SHOT_CAP
+
+        # Execute deterministic prefix once
+        self.locc.reset()
+        prefix_vars = dict(self.variables)
+        try:
+            send_ip = self._locc_execute_program(sorted_lines, stop_before_send=True,
+                                                  run_vars=Scope(prefix_vars))
+        except (RuntimeError, ValueError) as e:
+            self.io.writeln(f"?RUNTIME ERROR: {e}")
+            return
+
+        # Snapshot state after prefix
+        snap = self.locc.snapshot()
+        snap_vars = dict(self.variables)
 
         per_reg = {name: {} for name in self.locc.names}
         counts_joint = {}
@@ -270,11 +292,15 @@ class LOCCMixin:
         progress_interval = max(1, shots // 10)
 
         for shot in range(shots):
-            self.locc.reset()
+            # Restore to post-prefix state
+            self.locc.restore(snap)
+            self.variables.clear()
+            self.variables.update(snap_vars)
             try:
-                self._locc_execute_program(sorted_lines)
+                self._locc_execute_program(sorted_lines, start_ip=send_ip,
+                                           run_vars=Scope(self.variables))
             except (RuntimeError, ValueError) as e:
-                print(f"?RUNTIME ERROR: {e}")
+                self.io.writeln(f"?RUNTIME ERROR: {e}")
                 return
             if has_measure:
                 if self.locc.joint:
@@ -295,14 +321,13 @@ class LOCCMixin:
                 counts_joint[jkey] = counts_joint.get(jkey, 0) + 1
             if shots > 50 and (shot + 1) % progress_interval == 0:
                 pct = 100 * (shot + 1) // shots
-                print(f"  {pct}% ({shot+1}/{shots} shots)...",
-                      end='\r', flush=True)
+                self.io.write(f"  {pct}% ({shot+1}/{shots} shots)...\r")
 
         if shots > 50:
-            print(" " * 40, end='\r')  # clear progress line
+            self.io.write(" " * 40 + '\r')
         dt = time.time() - t0
-        print(f"\nRAN {len(self.program)} lines, LOCC {mode} "
-              f"{sizes_str}q, {shots} shots in {dt:.2f}s")
+        self.io.writeln(f"\nRAN {len(self.program)} lines, LOCC {mode} "
+                        f"{sizes_str}q, {shots} shots in {dt:.2f}s")
         if has_measure:
             self._locc_display_results(per_reg, counts_joint)
             self.last_counts = counts_joint
@@ -346,14 +371,20 @@ class LOCCMixin:
             print(f"\n  Joint ({jlabel}):")
             self.print_histogram(counts_joint)
 
-    def _locc_execute_program(self, sorted_lines):
-        """Execute all LOCC program lines using numpy engine."""
+    def _locc_execute_program(self, sorted_lines, *, start_ip: int = 0,
+                              run_vars=None, stop_before_send: bool = False) -> int:
+        """Execute LOCC program lines.
+
+        Returns the ip where execution stopped (end of program or at first SEND
+        if stop_before_send is True).
+        """
         from qbasic_core.scope import Scope
         from qbasic_core.exec_context import ExecContext
-        from qbasic_core.statements import MeasureStmt
-        run_vars = Scope(self.variables)
+        from qbasic_core.statements import MeasureStmt, SendStmt
+        if run_vars is None:
+            run_vars = Scope(self.variables)
         ctx = ExecContext(
-            sorted_lines=sorted_lines, ip=0, run_vars=run_vars,
+            sorted_lines=sorted_lines, ip=start_ip, run_vars=run_vars,
             max_iterations=self._max_iterations, locc_engine=self.locc,
         )
         _parsed = [self._get_parsed(ln) for ln in sorted_lines]
@@ -366,6 +397,8 @@ class LOCCMixin:
             if isinstance(_parsed[ctx.ip], MeasureStmt):
                 ctx.ip += 1
                 continue
+            if stop_before_send and isinstance(_parsed[ctx.ip], SendStmt):
+                return ctx.ip
             try:
                 result = self._locc_exec_line(_stmts[ctx.ip], ctx.loop_stack, sorted_lines, ctx.ip, run_vars)
             except Exception as e:
@@ -376,6 +409,7 @@ class LOCCMixin:
                 ctx.ip = result
             else:
                 ctx.ip += 1
+        return ctx.ip
 
     def _locc_exec_line(self, stmt, loop_stack, sorted_lines, ip, run_vars):
         """Execute one line in LOCC mode."""

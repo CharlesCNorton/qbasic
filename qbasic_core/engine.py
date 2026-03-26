@@ -459,6 +459,22 @@ class LOCCEngine:
                 sv[0] = 1.0
                 self.svs[name] = sv
 
+    def snapshot(self) -> dict:
+        """Capture current quantum state for later restore."""
+        if self.joint:
+            return {'joint': True, 'sv': self.sv.copy(), 'classical': dict(self.classical)}
+        return {'joint': False,
+                'svs': {n: sv.copy() for n, sv in self.svs.items()},
+                'classical': dict(self.classical)}
+
+    def restore(self, snap: dict) -> None:
+        """Restore quantum state from a snapshot."""
+        self.classical = dict(snap['classical'])
+        if snap['joint']:
+            self.sv = snap['sv'].copy()
+        else:
+            self.svs = {n: sv.copy() for n, sv in snap['svs'].items()}
+
     def apply(self, reg: str, gate_name: str, params: tuple[float, ...], qubits: list[int]) -> None:
         """Apply a gate to a specific register."""
         matrix = _np_gate_matrix(gate_name, tuple(params))
