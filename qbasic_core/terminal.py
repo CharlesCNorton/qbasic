@@ -1169,29 +1169,112 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
             _, r = self._cf_wend(run_vars, loop_stack, sorted_lines, ip)
             return r
         if isinstance(parsed, ForStmt):
-            r = self._cf_for(stmt, run_vars, loop_stack, ip)
-            return r[1] if r else ExecResult.ADVANCE
+            start = self._eval_with_vars(parsed.start_expr, run_vars)
+            end = self._eval_with_vars(parsed.end_expr, run_vars)
+            step = self._eval_with_vars(parsed.step_expr, run_vars) if parsed.step_expr else 1
+            try:
+                if start == int(start): start = int(start)
+            except (OverflowError, ValueError): pass
+            try:
+                if end == int(end): end = int(end)
+            except (OverflowError, ValueError): pass
+            try:
+                if isinstance(step, float) and step == int(step): step = int(step)
+            except (OverflowError, ValueError): pass
+            run_vars[parsed.var] = start
+            self.variables[parsed.var] = start
+            loop_stack.append({'var': parsed.var, 'current': start, 'end': end,
+                               'step': step, 'return_ip': ip})
+            return ExecResult.ADVANCE
         if isinstance(parsed, NextStmt):
-            r = self._cf_next(stmt, run_vars, loop_stack)
-            return r[1] if r else ExecResult.ADVANCE
+            if not loop_stack or loop_stack[-1].get('var') != parsed.var:
+                if loop_stack:
+                    raise RuntimeError(f"NEXT {parsed.var} does not match current FOR {loop_stack[-1].get('var', '?')}")
+                raise RuntimeError(f"NEXT {parsed.var} without matching FOR")
+            loop = loop_stack[-1]
+            loop['current'] += loop['step']
+            if (loop['step'] > 0 and loop['current'] <= loop['end']) or \
+               (loop['step'] < 0 and loop['current'] >= loop['end']):
+                run_vars[parsed.var] = loop['current']
+                self.variables[parsed.var] = loop['current']
+                return loop['return_ip'] + 1
+            else:
+                loop_stack.pop()
+                return ExecResult.ADVANCE
         if isinstance(parsed, WhileStmt):
-            r = self._cf_while(stmt, run_vars, loop_stack, sorted_lines, ip)
-            return r[1] if r else ExecResult.ADVANCE
+            if self._eval_condition(parsed.condition, run_vars):
+                loop_stack.append({'type': 'while', 'cond': parsed.condition, 'return_ip': ip})
+                return ExecResult.ADVANCE
+            else:
+                return self._find_matching_wend(sorted_lines, ip)
         if isinstance(parsed, LetStmt):
-            run_vars[parsed.name] = self._eval_with_vars(parsed.expr, run_vars)
-            self.variables[parsed.name] = run_vars[parsed.name]
+            val = self._eval_with_vars(parsed.expr, run_vars)
+            run_vars[parsed.name] = val
+            self.variables[parsed.name] = val
             return ExecResult.ADVANCE
         if isinstance(parsed, LetArrayStmt):
-            r = self._cf_let_array(stmt, run_vars)
-            return r[1] if r else ExecResult.ADVANCE
+            idx = int(self._eval_with_vars(parsed.index_expr, run_vars))
+            val = self._eval_with_vars(parsed.value_expr, run_vars)
+            if parsed.name not in self.arrays:
+                self.arrays[parsed.name] = [0.0] * (idx + 1)
+            while idx >= len(self.arrays[parsed.name]):
+                self.arrays[parsed.name].append(0.0)
+            self.arrays[parsed.name][idx] = val
+            return ExecResult.ADVANCE
         if isinstance(parsed, PrintStmt):
-            r = self._cf_print(stmt, run_vars)
-            return r[1] if r else ExecResult.ADVANCE
+            import re as _re
+            text = parsed.expr
+            suppress_nl = text.rstrip().endswith(';')
+            tab_advance = text.rstrip().endswith(',')
+            if suppress_nl:
+                text = text.rstrip().removesuffix(';').rstrip()
+            elif tab_advance:
+                text = text.rstrip().removesuffix(',').rstrip()
+            # SPC/TAB inline
+            def _spc(m_s):
+                return ' ' * max(0, int(self._eval_with_vars(m_s.group(1), run_vars)))
+            def _tab(m_t):
+                return ' ' * max(0, int(self._eval_with_vars(m_t.group(1), run_vars)))
+            text = _re.sub(r'\bSPC\s*\(([^)]+)\)', _spc, text, flags=_re.IGNORECASE)
+            text = _re.sub(r'\bTAB\s*\(([^)]+)\)', _tab, text, flags=_re.IGNORECASE)
+            if (text.startswith('"') and text.endswith('"')) or \
+               (text.startswith("'") and text.endswith("'")):
+                output = text[1:-1]
+            else:
+                try:
+                    output = str(self._eval_with_vars(text, run_vars))
+                except Exception:
+                    output = text
+            if suppress_nl:
+                self.io.write(output)
+            elif tab_advance:
+                col = len(output) % 14
+                self.io.write(output + ' ' * (14 - col if col > 0 else 14))
+            else:
+                self.io.writeln(output)
+            return ExecResult.ADVANCE
         if isinstance(parsed, IfThenStmt):
-            def _recurse_if(s, ls, sl, i, rv):
-                return self._exec_line(s, qc=qc, loop_stack=ls, sorted_lines=sl, ip=i, run_vars=rv)
-            r = self._cf_if_then(stmt, run_vars, loop_stack, sorted_lines, ip, _recurse_if)
-            return r[1] if r else ExecResult.ADVANCE
+            cond_vars = run_vars
+            if self.locc_mode and self.locc:
+                cond_vars = {**({} if not hasattr(run_vars, 'as_dict') else run_vars.as_dict()),
+                             **self.locc.classical}
+                if hasattr(run_vars, 'as_dict'):
+                    cond_vars.update(run_vars.as_dict())
+                else:
+                    cond_vars.update(run_vars)
+            result = ExecResult.ADVANCE
+            if self._eval_condition(parsed.condition, cond_vars):
+                if parsed.then_clause:
+                    r = self._exec_line(parsed.then_clause, qc=qc, loop_stack=loop_stack,
+                                        sorted_lines=sorted_lines, ip=ip, run_vars=run_vars)
+                    if r is not None and r is not ExecResult.ADVANCE:
+                        result = r
+            elif parsed.else_clause:
+                r = self._exec_line(parsed.else_clause, qc=qc, loop_stack=loop_stack,
+                                    sorted_lines=sorted_lines, ip=ip, run_vars=run_vars)
+                if r is not None and r is not ExecResult.ADVANCE:
+                    result = r
+            return result
         if isinstance(parsed, AtRegStmt) and not self.locc_mode:
             raise ValueError("@register syntax requires LOCC mode (try: LOCC <n1> <n2>)")
         if isinstance(parsed, CompoundStmt):
@@ -1219,10 +1302,11 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
                                 sorted_lines=sorted_lines, ip=ip, run_vars=run_vars)
             return ExecResult.ADVANCE
 
-        # 5. Gate application
+        # 5. Gate application (through backend when available)
+        _backend = ctx.backend if ctx else None
         expanded = self._expand_statement(stmt)
         for gate_str in expanded:
-            self._apply_gate_str(gate_str, qc)
+            self._apply_gate_str(gate_str, qc, backend=_backend)
 
         return ExecResult.ADVANCE
 
@@ -1421,13 +1505,19 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         # Parse call arguments
         call_args = [a.strip() for a in rest.split(',') if a.strip()] if rest else []
 
+        # Build param map for single-pass substitution
+        param_map = {}
+        for i, pname in enumerate(param_names):
+            if i < len(call_args):
+                param_map[pname] = call_args[i]
+        if param_map:
+            pattern = re.compile(r'\b(' + '|'.join(re.escape(p) for p in param_map) + r')\b')
+            def _sub(m):
+                return param_map[m.group(1)]
+
         result = []
         for gate_str in body:
-            # Substitute parameters
-            gs = gate_str
-            for i, pname in enumerate(param_names):
-                if i < len(call_args):
-                    gs = re.sub(r'\b' + re.escape(pname) + r'\b', call_args[i], gs)
+            gs = pattern.sub(_sub, gate_str) if param_map else gate_str
             if offset:
                 gs = self._offset_qubits(gs, offset)
             result.append(gs)
@@ -1461,8 +1551,12 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
                         result.append(tok)
         return ' '.join(result)
 
-    def _apply_gate_str(self, stmt, qc, _call_stack=None):
-        """Parse and apply a single gate string to the circuit."""
+    def _apply_gate_str(self, stmt, qc, _call_stack=None, *, backend=None):
+        """Parse and apply a single gate string to the circuit.
+
+        When backend is provided, standard gates are dispatched through
+        backend.apply_gate() instead of self._apply_gate(qc, ...).
+        """
         stmt = stmt.strip()
         if not stmt:
             return
@@ -1471,13 +1565,16 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         word = stmt.split()[0].upper() if stmt.split() else ''
         if word in self.subroutines:
             for sub_stmt in self._expand_statement(stmt, _call_stack):
-                self._apply_gate_str(sub_stmt, qc, _call_stack)
+                self._apply_gate_str(sub_stmt, qc, _call_stack, backend=backend)
             return
 
         upper = stmt.upper()
         if upper.startswith('REM') or upper.startswith("'") or upper == 'BARRIER':
             if upper == 'BARRIER':
-                qc.barrier()
+                if backend:
+                    backend.barrier()
+                else:
+                    qc.barrier()
             return
         if upper == 'MEASURE':
             return  # handled at run level
@@ -1551,16 +1648,19 @@ class QBasicTerminal(ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin, Contro
         params = [self.eval_expr(a) for a in args[:n_params]]
         qubits = [self._resolve_qubit(a) for a in args[n_params:n_params+n_qubits]]
 
-        # Apply gate
-        self._apply_gate(qc, gate_name, params, qubits)
+        # Apply gate through backend when available
+        if backend:
+            backend.apply_gate(gate_name, tuple(params), qubits)
+        else:
+            self._apply_gate(qc, gate_name, params, qubits)
 
     def _tokenize_gate(self, stmt: str) -> list[str]:
-        """Split gate statement into tokens, handling commas and register notation."""
-        # Replace commas with spaces, split
-        stmt = stmt.replace(',', ' ')
-        # Handle register[index] notation
+        """Split gate statement into tokens, handling commas and register notation.
+
+        Splits on whitespace and commas. Preserves register[index] notation.
+        """
         stmt = RE_REG_INDEX.sub(r'\1[\2]', stmt)
-        return stmt.split()
+        return [t.strip() for t in re.split(r'[,\s]+', stmt) if t.strip()]
 
     def _resolve_qubit(self, arg: str, *, n_qubits: int | None = None) -> int:
         """Resolve a qubit argument and validate range.
