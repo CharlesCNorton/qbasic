@@ -256,9 +256,10 @@ class QBasicTerminal(Engine, ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin
         'BANK': 'cmd_bank', 'CHAIN': 'cmd_chain', 'MERGE': 'cmd_merge',
         # File handles
         'OPEN': 'cmd_open', 'CLOSE': 'cmd_close',
-        # Module, types, network
+        # Module, types, network, primitives
         'IMPORT': 'cmd_import', 'TYPE': 'cmd_type',
         'CONNECT': 'cmd_connect', 'DISCONNECT': 'cmd_disconnect',
+        'SAMPLE': 'cmd_sample', 'ESTIMATE': 'cmd_estimate',
         # Circuit macros
         'CIRCUIT_DEF': 'cmd_circuit_def', 'APPLY_CIRCUIT': 'cmd_apply_circuit',
     }
@@ -337,7 +338,8 @@ class QBasicTerminal(Engine, ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin
         if not rest:
             self.io.writeln(f"METHOD = {self.sim_method}  DEVICE = {self.sim_device}")
             methods = ['automatic', 'statevector', 'density_matrix',
-                       'stabilizer', 'matrix_product_state', 'extended_stabilizer']
+                       'stabilizer', 'matrix_product_state', 'extended_stabilizer',
+                       'unitary', 'superop']
             self.io.writeln(f"  methods: {', '.join(methods)}")
             self.io.writeln(f"  devices: CPU, GPU")
             return
@@ -651,6 +653,15 @@ class QBasicTerminal(Engine, ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin
                 backend_opts['device'] = 'GPU'
             if self._noise_model:
                 backend_opts['noise_model'] = self._noise_model
+            # Performance tuning from memory-mapped config
+            if hasattr(self, '_fusion_enable'):
+                backend_opts['fusion_enable'] = self._fusion_enable
+            if hasattr(self, '_mps_truncation'):
+                backend_opts['matrix_product_state_truncation_threshold'] = self._mps_truncation
+            if hasattr(self, '_sv_parallel_threshold'):
+                backend_opts['statevector_parallel_threshold'] = self._sv_parallel_threshold
+            if hasattr(self, '_es_approx_error'):
+                backend_opts['extended_stabilizer_approximation_error'] = self._es_approx_error
             cache_key = (
                 tuple(sorted(self.program.items())),
                 self.num_qubits, method, self.sim_device,
@@ -694,6 +705,53 @@ class QBasicTerminal(Engine, ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin
             self._auto_display()
         else:
             self.io.writeln("(no MEASURE in program — use STATE or PROBS to inspect)")
+
+    def cmd_sample(self, rest: str = '') -> None:
+        """SAMPLE [shots] — sample the current circuit using SamplerV2 primitive."""
+        if not self.program:
+            self.io.writeln("NOTHING TO SAMPLE")
+            return
+        shots = int(rest.strip()) if rest.strip() else self.shots
+        try:
+            qc, has_measure = self.build_circuit()
+            if has_measure:
+                qc.measure_all()
+            from qiskit_aer.primitives import SamplerV2
+            sampler = SamplerV2()
+            result = sampler.run([qc], shots=shots).result()
+            counts = result[0].data.meas.get_counts() if hasattr(result[0].data, 'meas') else {}
+            self.last_counts = dict(counts)
+            self.io.writeln(f"SAMPLED {shots} shots ({len(counts)} unique outcomes)")
+            self.print_histogram(counts)
+        except Exception as e:
+            self.io.writeln(f"?SAMPLE ERROR: {e}")
+
+    def cmd_estimate(self, rest: str) -> None:
+        """ESTIMATE <pauli> [qubits] — estimate observable expectation via EstimatorV2."""
+        parts = rest.split()
+        if not parts:
+            self.io.writeln("?USAGE: ESTIMATE <Z|ZZ|XY|...> [qubits]")
+            return
+        pauli_str = parts[0].upper()
+        qubits = [int(q) for q in parts[1:]] if len(parts) > 1 else list(range(len(pauli_str)))
+        try:
+            qc, _ = self.build_circuit()
+            from qiskit.quantum_info import SparsePauliOp
+            full_pauli = ['I'] * self.num_qubits
+            for i, p in enumerate(pauli_str):
+                if i < len(qubits):
+                    full_pauli[self.num_qubits - 1 - qubits[i]] = p
+            op = SparsePauliOp(''.join(full_pauli))
+            from qiskit_aer.primitives import EstimatorV2
+            estimator = EstimatorV2()
+            from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+            pm = generate_preset_pass_manager(optimization_level=0)
+            qc_t = pm.run(qc)
+            result = estimator.run([(qc_t, op)]).result()
+            val = result[0].data.evs
+            self.io.writeln(f"  <{pauli_str}> on qubits {qubits} = {float(val):.6f}")
+        except Exception as e:
+            self.io.writeln(f"?ESTIMATE ERROR: {e}")
 
     def cmd_step(self) -> None:
         """Step through program, showing state after each line."""
@@ -1441,6 +1499,10 @@ class QBasicTerminal(Engine, ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin
             or self._try_exec_let_str(stmt, run_vars)
             or self._try_exec_print_using(stmt, run_vars)
             or self._try_exec_open_close(stmt)
+            or self._try_exec_save_expect(stmt, qc, run_vars)
+            or self._try_exec_save_probs(stmt, qc, run_vars)
+            or self._try_exec_save_amps(stmt, qc, run_vars)
+            or self._try_exec_set_state(stmt, qc)
         )
 
     def _try_exec_poke(self, stmt: str, run_vars: dict) -> bool:
@@ -1524,6 +1586,78 @@ class QBasicTerminal(Engine, ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin
             return True
         return False
 
+    def _try_exec_save_expect(self, stmt: str, qc, run_vars: dict) -> bool:
+        """SAVE_EXPECT <pauli> <qubits> -> <var> — inline expectation value."""
+        from qbasic_core.engine import RE_SAVE_EXPECT
+        m = RE_SAVE_EXPECT.match(stmt)
+        if not m:
+            return False
+        pauli_str = m.group(1).upper()
+        qubits = [int(q.strip()) for q in m.group(2).split(',') if q.strip()]
+        var = m.group(3)
+        try:
+            from qiskit.quantum_info import SparsePauliOp
+            full_pauli = ['I'] * self.num_qubits
+            for i, p in enumerate(pauli_str):
+                if i < len(qubits):
+                    full_pauli[self.num_qubits - 1 - qubits[i]] = p
+            op = SparsePauliOp(''.join(full_pauli))
+            qc.save_expectation_value(op, list(range(self.num_qubits)), label=f'exp_{var}')
+            run_vars[var] = 0  # actual value available after simulation
+            self.variables[var] = 0
+        except Exception as e:
+            self.io.writeln(f"?SAVE_EXPECT ERROR: {e}")
+        return True
+
+    def _try_exec_save_probs(self, stmt: str, qc, run_vars: dict) -> bool:
+        """SAVE_PROBS <qubits> -> <var> — inline probability snapshot."""
+        from qbasic_core.engine import RE_SAVE_PROBS
+        m = RE_SAVE_PROBS.match(stmt)
+        if not m:
+            return False
+        qubits = [int(q.strip()) for q in m.group(1).split(',') if q.strip()]
+        var = m.group(2)
+        try:
+            qc.save_probabilities(qubits, label=f'prob_{var}')
+            run_vars[var] = 0
+            self.variables[var] = 0
+        except Exception as e:
+            self.io.writeln(f"?SAVE_PROBS ERROR: {e}")
+        return True
+
+    def _try_exec_save_amps(self, stmt: str, qc, run_vars: dict) -> bool:
+        """SAVE_AMPS <indices> -> <var> — save specific amplitudes by index."""
+        from qbasic_core.engine import RE_SAVE_AMPS
+        m = RE_SAVE_AMPS.match(stmt)
+        if not m:
+            return False
+        indices = [int(q.strip()) for q in m.group(1).split(',') if q.strip()]
+        var = m.group(2)
+        try:
+            qc.save_amplitudes(indices, label=f'amp_{var}')
+            run_vars[var] = 0
+            self.variables[var] = 0
+        except Exception as e:
+            self.io.writeln(f"?SAVE_AMPS ERROR: {e}")
+        return True
+
+    def _try_exec_set_state(self, stmt: str, qc) -> bool:
+        """SET_STATE <statevector_expr> — inject custom statevector mid-circuit."""
+        from qbasic_core.engine import RE_SET_STATE
+        m = RE_SET_STATE.match(stmt)
+        if not m:
+            return False
+        try:
+            sv_expr = m.group(1).strip()
+            sv_list = self._parse_matrix(sv_expr)
+            sv_flat = np.array(sv_list, dtype=complex).ravel()
+            from qiskit.quantum_info import Statevector
+            sv_obj = Statevector(sv_flat)
+            from qiskit_aer.library import SetStatevector
+            qc.append(SetStatevector(sv_obj), list(range(self.num_qubits)))
+        except Exception as e:
+            self.io.writeln(f"?SET_STATE ERROR: {e}")
+        return True
 
     @staticmethod
     def _split_colon_stmts(stmt: str) -> list[str]:
@@ -1927,42 +2061,90 @@ class QBasicTerminal(Engine, ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin
                   f"{self.last_circuit.size()} gates")
 
     def cmd_noise(self, rest: str) -> None:
-        """NOISE <type> <param> — set noise model.
-        Types: off, depolarizing <p>, amplitude_damping <p>, phase_flip <p>"""
+        """NOISE <type> <params> — set noise model.
+
+        Types:
+          off                          Disable noise
+          depolarizing <p>             Depolarizing channel (all gates)
+          amplitude_damping <p>        T1-like decay
+          phase_flip <p>               T2-like dephasing
+          thermal <T1> <T2> <t_gate>   Physical decoherence (microseconds)
+          readout <p0> <p1>            Measurement bit-flip error
+          combined <p_amp> <p_phase>   Amplitude + phase damping
+          pauli <px> <py> <pz>         General Pauli channel
+          reset <p0> <p1>              Spontaneous reset error
+        """
         if not rest or rest.strip().upper() == 'OFF':
             self._noise_model = None
             self.io.writeln("NOISE OFF")
             return
         parts = rest.split()
         ntype = parts[0].lower()
-        param = float(parts[1]) if len(parts) > 1 else 0.01
         try:
-            from qiskit_aer.noise import NoiseModel, depolarizing_error, amplitude_damping_error, phase_damping_error
+            from qiskit_aer.noise import (
+                NoiseModel, depolarizing_error, amplitude_damping_error,
+                phase_damping_error, thermal_relaxation_error,
+                phase_amplitude_damping_error, ReadoutError,
+                pauli_error, reset_error,
+            )
             nm = NoiseModel()
-            _1q_gates = ['h', 'x', 'y', 'z', 's', 't', 'sdg', 'tdg',
-                         'sx', 'rx', 'ry', 'rz', 'p', 'u', 'id']
-            _2q_gates = ['cx', 'cy', 'cz', 'ch', 'swap', 'dcx', 'iswap',
-                         'crx', 'cry', 'crz', 'cp', 'rxx', 'ryy', 'rzz']
-            _3q_gates = ['ccx', 'cswap']
+            _1q = ['h', 'x', 'y', 'z', 's', 't', 'sdg', 'tdg',
+                   'sx', 'rx', 'ry', 'rz', 'p', 'u', 'id']
+            _2q = ['cx', 'cy', 'cz', 'ch', 'swap', 'dcx', 'iswap',
+                   'crx', 'cry', 'crz', 'cp', 'rxx', 'ryy', 'rzz']
+            _3q = ['ccx', 'cswap']
             if ntype == 'depolarizing':
-                err_1q = depolarizing_error(param, 1)
-                err_2q = depolarizing_error(param, 2)
-                err_3q = depolarizing_error(param, 3)
-                nm.add_all_qubit_quantum_error(err_1q, _1q_gates)
-                nm.add_all_qubit_quantum_error(err_2q, _2q_gates)
-                nm.add_all_qubit_quantum_error(err_3q, _3q_gates)
+                p = float(parts[1]) if len(parts) > 1 else 0.01
+                nm.add_all_qubit_quantum_error(depolarizing_error(p, 1), _1q)
+                nm.add_all_qubit_quantum_error(depolarizing_error(p, 2), _2q)
+                nm.add_all_qubit_quantum_error(depolarizing_error(p, 3), _3q)
+                self.io.writeln(f"NOISE depolarizing p={p}")
             elif ntype == 'amplitude_damping':
-                err = amplitude_damping_error(param)
-                nm.add_all_qubit_quantum_error(err, _1q_gates)
+                p = float(parts[1]) if len(parts) > 1 else 0.01
+                nm.add_all_qubit_quantum_error(amplitude_damping_error(p), _1q)
+                self.io.writeln(f"NOISE amplitude_damping p={p}")
             elif ntype == 'phase_flip':
-                err = phase_damping_error(param)
-                nm.add_all_qubit_quantum_error(err, _1q_gates)
+                p = float(parts[1]) if len(parts) > 1 else 0.01
+                nm.add_all_qubit_quantum_error(phase_damping_error(p), _1q)
+                self.io.writeln(f"NOISE phase_flip p={p}")
+            elif ntype == 'thermal':
+                t1 = float(parts[1]) if len(parts) > 1 else 50e-6
+                t2 = float(parts[2]) if len(parts) > 2 else 70e-6
+                tg = float(parts[3]) if len(parts) > 3 else 1e-6
+                err = thermal_relaxation_error(t1, t2, tg)
+                nm.add_all_qubit_quantum_error(err, _1q)
+                self.io.writeln(f"NOISE thermal T1={t1} T2={t2} t_gate={tg}")
+            elif ntype == 'readout':
+                p0 = float(parts[1]) if len(parts) > 1 else 0.05
+                p1 = float(parts[2]) if len(parts) > 2 else 0.1
+                re = ReadoutError([[1 - p0, p0], [p1, 1 - p1]])
+                nm.add_all_qubit_readout_error(re)
+                self.io.writeln(f"NOISE readout p0={p0} p1={p1}")
+            elif ntype == 'combined':
+                pa = float(parts[1]) if len(parts) > 1 else 0.01
+                pp = float(parts[2]) if len(parts) > 2 else 0.01
+                nm.add_all_qubit_quantum_error(
+                    phase_amplitude_damping_error(pa, pp), _1q)
+                self.io.writeln(f"NOISE combined amp={pa} phase={pp}")
+            elif ntype == 'pauli':
+                px = float(parts[1]) if len(parts) > 1 else 0.01
+                py = float(parts[2]) if len(parts) > 2 else 0.01
+                pz = float(parts[3]) if len(parts) > 3 else 0.01
+                pi = max(0, 1.0 - px - py - pz)
+                err = pauli_error([('X', px), ('Y', py), ('Z', pz), ('I', pi)])
+                nm.add_all_qubit_quantum_error(err, _1q)
+                self.io.writeln(f"NOISE pauli px={px} py={py} pz={pz}")
+            elif ntype == 'reset':
+                p0 = float(parts[1]) if len(parts) > 1 else 0.01
+                p1 = float(parts[2]) if len(parts) > 2 else 0.01
+                nm.add_all_qubit_quantum_error(reset_error(p0, p1), _1q)
+                self.io.writeln(f"NOISE reset p0={p0} p1={p1}")
             else:
                 self.io.writeln(f"?UNKNOWN NOISE TYPE: {ntype}")
-                self.io.writeln("  Types: depolarizing, amplitude_damping, phase_flip")
+                self.io.writeln("  Types: depolarizing, amplitude_damping, phase_flip, thermal,")
+                self.io.writeln("         readout, combined, pauli, reset")
                 return
             self._noise_model = nm
-            self.io.writeln(f"NOISE {ntype} p={param}")
         except ImportError:
             self.io.writeln("?Noise model requires qiskit-aer noise module")
 

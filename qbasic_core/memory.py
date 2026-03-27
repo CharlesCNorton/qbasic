@@ -27,6 +27,11 @@ CFG_NAMES = {
     0xD000: 'num_qubits', 0xD001: 'shots', 0xD002: 'sim_method',
     0xD003: 'sim_device', 0xD004: 'noise_type', 0xD005: 'noise_param',
     0xD006: 'max_iterations', 0xD007: 'screen_mode',
+    # Performance tuning (Aer backend options)
+    0xD008: 'fusion_enable',        # 0/1
+    0xD009: 'mps_truncation',       # float threshold
+    0xD00A: 'sv_parallel_threshold', # int
+    0xD00B: 'es_approx_error',      # float (extended stabilizer)
 }
 
 STS_NAMES = {
@@ -124,6 +129,10 @@ class MemoryMixin:
         if n == 'noise_param':    return 0.0
         if n == 'max_iterations': return float(self._max_iterations)
         if n == 'screen_mode':    return float(self._screen_mode)
+        if n == 'fusion_enable':  return float(getattr(self, '_fusion_enable', 1))
+        if n == 'mps_truncation': return float(getattr(self, '_mps_truncation', 1e-16))
+        if n == 'sv_parallel_threshold': return float(getattr(self, '_sv_parallel_threshold', 14))
+        if n == 'es_approx_error': return float(getattr(self, '_es_approx_error', 0.05))
         return 0.0
 
     # ── POKE ───────────────────────────────────────────────────────────
@@ -140,6 +149,10 @@ class MemoryMixin:
             0xD003: lambda: setattr(self, 'sim_device', SIM_DEVICES_FWD.get(int(v), 'CPU')),
             0xD006: lambda: setattr(self, '_max_iterations', max(1, int(v))),
             0xD007: lambda: setattr(self, '_screen_mode', int(v)),
+            0xD008: lambda: setattr(self, '_fusion_enable', bool(int(v))),
+            0xD009: lambda: setattr(self, '_mps_truncation', v),
+            0xD00A: lambda: setattr(self, '_sv_parallel_threshold', int(v)),
+            0xD00B: lambda: setattr(self, '_es_approx_error', v),
         }
         if a in writers:
             writers[a]()
