@@ -224,6 +224,7 @@ class QBasicTerminal(Engine, ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin
         'CLS': 'cmd_cls', 'PLAY': 'cmd_play',
         # Debug
         'TRON': 'cmd_tron', 'TROFF': 'cmd_troff', 'CONT': 'cmd_cont',
+        'HISTORY': 'cmd_history',
         # Program management
         'CHECKSUM': 'cmd_checksum',
         # Classic
@@ -247,6 +248,7 @@ class QBasicTerminal(Engine, ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin
         'PROMPT': 'cmd_prompt',
         # Debug
         'BREAK': 'cmd_breakpoint', 'WATCH': 'cmd_watch', 'PROFILE': 'cmd_profile',
+        'REWIND': 'cmd_rewind', 'FORWARD': 'cmd_forward',
         'STATS': 'cmd_stats',
         # Program management
         'AUTO': 'cmd_auto', 'EDIT': 'cmd_edit', 'COPY': 'cmd_copy',
@@ -254,6 +256,11 @@ class QBasicTerminal(Engine, ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin
         'BANK': 'cmd_bank', 'CHAIN': 'cmd_chain', 'MERGE': 'cmd_merge',
         # File handles
         'OPEN': 'cmd_open', 'CLOSE': 'cmd_close',
+        # Module, types, network
+        'IMPORT': 'cmd_import', 'TYPE': 'cmd_type',
+        'CONNECT': 'cmd_connect', 'DISCONNECT': 'cmd_disconnect',
+        # Circuit macros
+        'CIRCUIT_DEF': 'cmd_circuit_def', 'APPLY_CIRCUIT': 'cmd_apply_circuit',
     }
 
     def dispatch(self, line: str) -> None:
@@ -467,6 +474,76 @@ class QBasicTerminal(Engine, ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin
                 body.append(line)
         self.subroutines[name] = {'body': body, 'params': params}
         self.io.writeln(f"DEF {name} ({len(body)} gates)")
+
+    def cmd_type(self, rest: str) -> None:
+        """TYPE name — define a named record type.
+
+        Usage: TYPE Point
+                 x AS FLOAT
+                 y AS FLOAT
+               END TYPE
+        Then: DIM p AS Point
+              LET p.x = 3.14
+        """
+        from qbasic_core.engine import RE_TYPE_BEGIN, RE_TYPE_FIELD, RE_END_TYPE
+        m = RE_TYPE_BEGIN.match(f"TYPE {rest}")
+        if not m:
+            self.io.writeln("?USAGE: TYPE <name>")
+            return
+        type_name = m.group(1).upper()
+        fields = []
+        self.io.writeln(f"  TYPE {type_name} (enter fields, END TYPE to finish)")
+        while True:
+            try:
+                line = self.io.read_line('  . ').strip()
+            except (KeyboardInterrupt, EOFError):
+                self.io.writeln("\n  CANCELLED")
+                return
+            if RE_END_TYPE.match(line):
+                break
+            fm = RE_TYPE_FIELD.match(line)
+            if fm:
+                fields.append((fm.group(1).lower(), fm.group(2).upper()))
+            elif line:
+                self.io.writeln(f"  ?EXPECTED: <name> AS <type>")
+        if not hasattr(self, '_user_types'):
+            self._user_types = {}
+        self._user_types[type_name] = fields
+        self.io.writeln(f"TYPE {type_name} ({len(fields)} fields)")
+
+    def cmd_circuit_def(self, rest: str) -> None:
+        """CIRCUIT_DEF name start-end — define a circuit macro from line range."""
+        import re as _re
+        m = _re.match(r'(\w+)\s+(\d+)\s*-\s*(\d+)', rest)
+        if not m:
+            self.io.writeln("?USAGE: CIRCUIT_DEF <name> <start>-<end>")
+            return
+        name = m.group(1).upper()
+        start, end = int(m.group(2)), int(m.group(3))
+        body = []
+        for ln in sorted(self.program.keys()):
+            if start <= ln <= end:
+                body.append(self.program[ln])
+        if not body:
+            self.io.writeln(f"?NO LINES IN RANGE {start}-{end}")
+            return
+        self.subroutines[name] = {'body': body, 'params': []}
+        self.io.writeln(f"CIRCUIT {name} = lines {start}-{end} ({len(body)} gates)")
+
+    def cmd_apply_circuit(self, rest: str) -> None:
+        """APPLY_CIRCUIT name [@offset] — apply a circuit macro."""
+        import re as _re
+        m = _re.match(r'(\w+)(?:\s+@(\d+))?', rest)
+        if not m:
+            self.io.writeln("?USAGE: APPLY_CIRCUIT <name> [@offset]")
+            return
+        name = m.group(1).upper()
+        offset = int(m.group(2)) if m.group(2) else 0
+        if name not in self.subroutines:
+            self.io.writeln(f"?UNDEFINED CIRCUIT: {name}")
+            return
+        call_str = f"{name} @{offset}" if offset else name
+        self.run_immediate(call_str)
 
     def cmd_reg(self, rest: str) -> None:
         """REG <name> <size> — allocate a named qubit register."""
@@ -1194,6 +1271,17 @@ class QBasicTerminal(Engine, ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin
                 text = text.rstrip().removesuffix(';').rstrip()
             elif tab_advance:
                 text = text.rstrip().removesuffix(',').rstrip()
+            # Quantum PRINT: @REG, QUBIT(n), ENTANGLEMENT(a,b)
+            qprint = self._try_quantum_print(text, run_vars)
+            if qprint is not None:
+                if suppress_nl:
+                    self.io.write(qprint)
+                elif tab_advance:
+                    col = len(qprint) % 14
+                    self.io.write(qprint + ' ' * (14 - col if col > 0 else 14))
+                else:
+                    self.io.writeln(qprint)
+                return ExecResult.ADVANCE
             # SPC/TAB inline
             def _spc(m_s):
                 return ' ' * max(0, int(self._eval_with_vars(m_s.group(1), run_vars)))
@@ -1730,6 +1818,65 @@ class QBasicTerminal(Engine, ExpressionMixin, DisplayMixin, DemoMixin, LOCCMixin
             raise ValueError(f"GATE {gate_name} NOT IMPLEMENTED")
 
     # ── Display ───────────────────────────────────────────────────────
+
+    def _try_quantum_print(self, text: str, run_vars: dict) -> str | None:
+        """Handle quantum PRINT expressions. Returns formatted string or None."""
+        import re as _re
+        upper = text.strip().upper()
+        # PRINT @REG — Dirac notation for LOCC register
+        if self.locc_mode and self.locc and upper.startswith('@'):
+            reg = upper[1:].strip()
+            if reg in self.locc.names:
+                sv = self.locc.get_sv(reg)
+                n = self.locc.get_n(reg)
+                return self._format_dirac(sv, n)
+        # PRINT QUBIT(n) — single-qubit Bloch info
+        m = _re.match(r'QUBIT\s*\((\d+)\)', text, _re.IGNORECASE)
+        if m and self.last_sv is not None:
+            q = int(m.group(1))
+            x, y, z = self._bloch_vector(self.last_sv, q)
+            p1 = self._peek(0x0100 + q * 8)
+            return f"q{q}: P(1)={p1:.4f} Bloch=({x:.3f},{y:.3f},{z:.3f})"
+        # PRINT ENTANGLEMENT(a,b) — entropy between qubits
+        m = _re.match(r'ENTANGLEMENT\s*\((\d+)\s*,\s*(\d+)\)', text, _re.IGNORECASE)
+        if m and self.last_sv is not None:
+            qa, qb = int(m.group(1)), int(m.group(2))
+            try:
+                from qiskit.quantum_info import Statevector, entropy, partial_trace
+                sv_obj = Statevector(np.ascontiguousarray(self.last_sv).ravel())
+                keep = [qa]
+                trace_out = [q for q in range(self.num_qubits) if q not in keep]
+                rho = partial_trace(sv_obj, trace_out)
+                ent = entropy(rho, base=2)
+                return f"S({qa},{qb}) = {ent:.6f} bits"
+            except Exception:
+                return f"S({qa},{qb}) = ?"
+        # PRINT STATE — full statevector in Dirac notation
+        if upper == 'STATE' and self.last_sv is not None:
+            return self._format_dirac(self.last_sv, self.num_qubits)
+        return None
+
+    def _format_dirac(self, sv, n_qubits: int) -> str:
+        """Format a statevector in Dirac notation."""
+        from qbasic_core.engine import AMPLITUDE_THRESHOLD
+        sv_flat = np.ascontiguousarray(sv).ravel()
+        parts = []
+        for i, amp in enumerate(sv_flat):
+            if abs(amp) > AMPLITUDE_THRESHOLD:
+                state = format(i, f'0{n_qubits}b')
+                if abs(amp.imag) < AMPLITUDE_THRESHOLD:
+                    if abs(amp.real - 1.0) < 1e-6:
+                        parts.append(f"|{state}\u27E9")
+                    elif abs(amp.real + 1.0) < 1e-6:
+                        parts.append(f"-|{state}\u27E9")
+                    else:
+                        parts.append(f"{amp.real:+.4f}|{state}\u27E9")
+                else:
+                    parts.append(f"({amp.real:.3f}{amp.imag:+.3f}j)|{state}\u27E9")
+                if len(parts) >= 16:
+                    parts.append("...")
+                    break
+        return " ".join(parts) if parts else "|0\u27E9"
 
     def cmd_state(self, rest: str = '') -> None:
         if self.locc_mode:

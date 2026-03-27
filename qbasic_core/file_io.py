@@ -142,6 +142,51 @@ class FileIOMixin:
             self._include_depth -= 1
         self.io.writeln(f"INCLUDED {path} ({count} lines)")
 
+    def cmd_import(self, rest: str) -> None:
+        """IMPORT "file.qb" — load subroutine definitions with namespace prefix.
+
+        DEFs in the imported file are prefixed with the module name.
+        E.g., IMPORT "math.qb" makes DEF ROT available as MATH.ROT.
+        """
+        from qbasic_core.engine import RE_IMPORT
+        m = RE_IMPORT.match(f"IMPORT {rest}") if not rest.startswith('IMPORT') else RE_IMPORT.match(rest)
+        path = rest.strip().strip('"').strip("'")
+        if not path:
+            self.io.writeln('?USAGE: IMPORT "filename"')
+            return
+        try:
+            path = self._sanitize_path(path)
+        except ValueError as e:
+            self.io.writeln(f"?IMPORT ERROR: {e}")
+            return
+        if not path.endswith('.qb') and not os.path.isfile(path):
+            path += '.qb'
+        if not os.path.isfile(path):
+            self.io.writeln(f"?FILE NOT FOUND: {path}")
+            return
+        # Module name from filename (without extension)
+        mod_name = os.path.splitext(os.path.basename(path))[0].upper()
+        # Parse the file for DEF statements
+        import_count = 0
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.rstrip('\n\r').strip()
+                if not line or line.startswith('#'):
+                    continue
+                # Look for DEF name = body
+                upper = line.upper()
+                if upper.startswith('DEF ') and '=' in line and not upper.startswith('DEF BEGIN'):
+                    from qbasic_core.engine import RE_DEF_SINGLE
+                    dm = RE_DEF_SINGLE.match(line[4:].strip())
+                    if dm:
+                        name = dm.group(1).upper()
+                        params = [p.strip() for p in dm.group(2).split(',')] if dm.group(2) else []
+                        body = [s.strip() for s in dm.group(3).split(':') if s.strip()]
+                        qualified = f"{mod_name}.{name}"
+                        self.subroutines[qualified] = {'body': body, 'params': params}
+                        import_count += 1
+        self.io.writeln(f"IMPORTED {mod_name} ({import_count} definitions from {path})")
+
     def cmd_dir(self, rest: str = '') -> None:
         """List .qb files in current or specified directory."""
         if rest.strip():

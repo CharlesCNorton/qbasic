@@ -19,7 +19,7 @@ from qbasic_core.engine import (
     RE_GET, RE_INPUT, RE_LINE_INPUT,
     RE_PRINT_USING, RE_OPEN, RE_CLOSE, RE_PRINT_FILE, RE_INPUT_FILE,
     RE_LPRINT, RE_SCREEN, RE_COLOR, RE_LOCATE,
-    RE_ON_MEASURE, RE_ON_TIMER, RE_CHAIN, RE_MERGE,
+    RE_ON_MEASURE, RE_ON_TIMER, RE_IMPORT, RE_CHAIN, RE_MERGE,
     RE_LET_STR, RE_DIM_MULTI, RE_MEASURE_BASIS, RE_SYNDROME,
 )
 from qbasic_core.statements import (
@@ -39,7 +39,7 @@ from qbasic_core.statements import (
     DimStmt, RedimStmt, EraseStmt,
     PokeStmt, SysStmt, UnitaryStmt,
     OpenStmt, CloseStmt, PrintFileStmt, InputFileStmt, LprintStmt,
-    ScreenStmt, ColorStmt, LocateStmt, ChainStmt, MergeStmt,
+    ScreenStmt, ColorStmt, LocateStmt, ImportStmt, ChainStmt, MergeStmt,
     MeasStmt, ResetStmt, MeasureBasisStmt, SyndromeStmt,
     SendStmt, ShareStmt, AtRegStmt,
     CompoundStmt,
@@ -291,6 +291,9 @@ def parse_stmt(raw: str) -> Stmt:
     m = RE_CLOSE.match(text)
     if m:
         return CloseStmt(raw=raw, handle=int(m.group(1)))
+    m = RE_IMPORT.match(text)
+    if m:
+        return ImportStmt(raw=raw, path=m.group(1).strip())
     m = RE_CHAIN.match(text)
     if m:
         return ChainStmt(raw=raw, path=m.group(1).strip())

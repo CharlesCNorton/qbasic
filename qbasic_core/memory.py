@@ -62,6 +62,9 @@ class MemoryMixin:
         self._status[0xD013] = 1.0
         self._user_sys: dict[int, str] = {}
         self._screen_mode: int = 0
+        # Per-qubit noise: $D100 + qubit*2 = noise_type, +1 = noise_param
+        # noise_type: 0=none, 1=depolarizing, 2=amplitude_damping, 3=phase_flip
+        self._qubit_noise: dict[int, tuple[int, float]] = {}  # qubit -> (type, param)
 
     def _update_status(self, **kw: float) -> None:
         for addr, name in STS_NAMES.items():
@@ -79,6 +82,11 @@ class MemoryMixin:
             return self._zero_page[a]
         if 0x0100 <= a <= 0x01FF:
             return self._peek_qubit(a)
+        if 0xD100 <= a <= 0xD1FF:
+            qubit = (a - 0xD100) // 2
+            field = (a - 0xD100) % 2
+            ntype, nparam = self._qubit_noise.get(qubit, (0, 0.0))
+            return float(ntype) if field == 0 else nparam
         if a in CFG_NAMES:
             return self._peek_config(a)
         if a in STS_NAMES:
@@ -135,10 +143,42 @@ class MemoryMixin:
         }
         if a in writers:
             writers[a]()
+        elif 0xD100 <= a <= 0xD1FF:
+            qubit = (a - 0xD100) // 2
+            field = (a - 0xD100) % 2
+            ntype, nparam = self._qubit_noise.get(qubit, (0, 0.0))
+            if field == 0:
+                self._qubit_noise[qubit] = (int(v), nparam)
+            else:
+                self._qubit_noise[qubit] = (ntype, v)
         elif 0xD010 <= a <= 0xD01F:
             self.io.writeln(f"?READ-ONLY: ${a:04X}")
         elif 0x0100 <= a <= 0x01FF:
-            self.io.writeln("?USE GATES TO MODIFY QUBIT STATE")
+            # Bloch sphere POKE — prepare qubit state via memory map
+            import math
+            off = a - 0x0100
+            qubit, field = off // QUBIT_BLOCK, off % QUBIT_BLOCK
+            if qubit >= self.num_qubits:
+                self.io.writeln(f"?QUBIT {qubit} OUT OF RANGE")
+                return
+            if field == 0:
+                # POKE P(|1⟩) — set probability via RY rotation
+                p1 = max(0.0, min(1.0, v))
+                theta = 2 * math.asin(math.sqrt(p1))
+                # This requires a circuit context — store for next RUN
+                if not hasattr(self, '_poke_state_prep'):
+                    self._poke_state_prep = {}
+                self._poke_state_prep[qubit] = ('RY', theta)
+                self.io.writeln(f"POKE q{qubit}: P(1)={p1:.4f} -> RY({theta:.4f})")
+            elif field in (1, 2, 3):
+                # Bloch x, y, z — store target vector
+                if not hasattr(self, '_poke_state_prep'):
+                    self._poke_state_prep = {}
+                labels = {1: 'Bx', 2: 'By', 3: 'Bz'}
+                self._poke_state_prep[(qubit, labels[field])] = v
+                self.io.writeln(f"POKE q{qubit}.{labels[field]} = {v:.4f}")
+            else:
+                self.io.writeln(f"?FIELD {field} NOT WRITABLE (use 0=P(1), 1-3=Bloch)")
 
     # ── Commands ───────────────────────────────────────────────────────
 

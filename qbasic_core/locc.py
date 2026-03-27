@@ -172,10 +172,41 @@ class LOCCMixin:
         except RuntimeError as e:
             print(f"?{e}")
 
+    def cmd_connect(self, rest: str) -> None:
+        """CONNECT "host:port" AS <reg> — attach a remote quantum register.
+
+        Creates a local register that can be used with LOCC commands.
+        The connection info is stored for future network-backed execution.
+        Currently uses local simulation as a stand-in for the network layer.
+        """
+        import re as _re
+        m = _re.match(r'"?([^"]+)"?\s+AS\s+([A-Z])', rest, _re.IGNORECASE)
+        if not m:
+            self.io.writeln('?USAGE: CONNECT "host:port" AS <reg>')
+            return
+        endpoint = m.group(1).strip()
+        reg = m.group(2).upper()
+        if not hasattr(self, '_connections'):
+            self._connections = {}
+        self._connections[reg] = endpoint
+        # If not in LOCC mode, auto-enter with a default local register + the remote
+        if not self.locc_mode:
+            self.cmd_locc(f'3 3')
+        self.io.writeln(f"CONNECTED {reg} -> {endpoint} (local simulation)")
+
+    def cmd_disconnect(self, rest: str) -> None:
+        """DISCONNECT <reg> — detach a remote register."""
+        reg = rest.strip().upper()
+        if hasattr(self, '_connections') and reg in self._connections:
+            del self._connections[reg]
+            self.io.writeln(f"DISCONNECTED {reg}")
+        else:
+            self.io.writeln(f"?{reg} NOT CONNECTED")
+
     def cmd_loccinfo(self):
         """Show LOCC protocol metrics after a run."""
         if not self.locc_mode:
-            print("?NOT IN LOCC MODE")
+            self.io.writeln("?NOT IN LOCC MODE")
             return
         mode = "JOINT" if self.locc.joint else "SPLIT"
         print(f"\n  LOCC Protocol Metrics ({mode})")

@@ -20,7 +20,7 @@ class DebugMixin:
     """
 
     def _init_debug(self) -> None:
-        self._error_target: int | None = None  # ON ERROR GOTO target line
+        self._error_target: int | None = None
         self._err_code: int = 0
         self._err_line: int = 0
         self._in_error_handler: bool = False
@@ -32,6 +32,9 @@ class DebugMixin:
         self._on_timer_target: int | None = None
         self._on_timer_interval: float = 0.0
         self._on_timer_last: float = 0.0
+        # Time-travel: statevector checkpoints indexed by gate count
+        self._sv_checkpoints: list[tuple[int, Any]] = []  # [(line_num, sv_copy)]
+        self._tt_position: int = -1  # current position in checkpoint list
 
     # ── Error handling ─────────────────────────────────────────────────
 
@@ -108,6 +111,50 @@ class DebugMixin:
         if not self._eval_condition(cond, run_vars):
             raise RuntimeError(f"ASSERTION FAILED: {cond}")
         return True, ExecResult.ADVANCE
+
+    # ── Time-travel debugging ─────────────────────────────────────────
+
+    def _checkpoint_sv(self, line_num: int) -> None:
+        """Save a statevector checkpoint (for small qubit counts)."""
+        if self.last_sv is not None and self.num_qubits <= 16:
+            import numpy as np
+            self._sv_checkpoints.append((line_num, np.array(self.last_sv).copy()))
+            self._tt_position = len(self._sv_checkpoints) - 1
+
+    def cmd_rewind(self, rest: str = '') -> None:
+        """REWIND [N] — go back N steps in the statevector history."""
+        if not self._sv_checkpoints:
+            self.io.writeln("?NO CHECKPOINTS — use STEP mode to build history")
+            return
+        n = int(rest.strip()) if rest.strip() else 1
+        new_pos = max(0, self._tt_position - n)
+        self._tt_position = new_pos
+        line_num, sv = self._sv_checkpoints[new_pos]
+        self.last_sv = sv.copy()
+        self.io.writeln(f"REWIND to step {new_pos} (line {line_num})")
+        self._print_sv_compact(sv)
+
+    def cmd_forward(self, rest: str = '') -> None:
+        """FORWARD [N] — go forward N steps in the statevector history."""
+        if not self._sv_checkpoints:
+            self.io.writeln("?NO CHECKPOINTS")
+            return
+        n = int(rest.strip()) if rest.strip() else 1
+        new_pos = min(len(self._sv_checkpoints) - 1, self._tt_position + n)
+        self._tt_position = new_pos
+        line_num, sv = self._sv_checkpoints[new_pos]
+        self.last_sv = sv.copy()
+        self.io.writeln(f"FORWARD to step {new_pos} (line {line_num})")
+        self._print_sv_compact(sv)
+
+    def cmd_history(self, rest: str = '') -> None:
+        """HISTORY — show statevector checkpoint list."""
+        if not self._sv_checkpoints:
+            self.io.writeln("?NO CHECKPOINTS")
+            return
+        for i, (ln, _) in enumerate(self._sv_checkpoints):
+            marker = " <<" if i == self._tt_position else ""
+            self.io.writeln(f"  [{i}] line {ln}{marker}")
 
     # ── TRON / TROFF ───────────────────────────────────────────────────
 

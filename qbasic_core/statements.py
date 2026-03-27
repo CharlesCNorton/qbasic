@@ -308,6 +308,10 @@ class LocateStmt(Stmt):
     col: str
 
 @dataclass(frozen=True, slots=True)
+class ImportStmt(Stmt):
+    path: str
+
+@dataclass(frozen=True, slots=True)
 class ChainStmt(Stmt):
     path: str
 

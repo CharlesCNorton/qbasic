@@ -131,6 +131,11 @@ RE_INPUT_FILE = re.compile(r'INPUT\s+#(\d+)\s*,\s*(\w+\$?)', re.IGNORECASE)
 RE_LINE_INPUT = re.compile(
     r'LINE\s+INPUT\s+(?:"([^"]*)"\s*,\s*)?(\w+\$?)', re.IGNORECASE)
 RE_OPTION_BASE = re.compile(r'OPTION\s+BASE\s+([01])', re.IGNORECASE)
+RE_IMPORT = re.compile(r'IMPORT\s+"?([^"]+)"?', re.IGNORECASE)
+RE_TYPE_BEGIN = re.compile(r'TYPE\s+(\w+)', re.IGNORECASE)
+RE_TYPE_FIELD = re.compile(r'(\w+)\s+AS\s+(INTEGER|FLOAT|STRING|QUBIT)', re.IGNORECASE)
+RE_END_TYPE = re.compile(r'END\s+TYPE', re.IGNORECASE)
+RE_DIM_TYPE = re.compile(r'DIM\s+(\w+)\s+AS\s+(\w+)', re.IGNORECASE)
 RE_CHAIN = re.compile(r'CHAIN\s+"?([^"]+)"?', re.IGNORECASE)
 RE_MERGE = re.compile(r'MERGE\s+"?([^"]+)"?', re.IGNORECASE)
 RE_DEF_FN = re.compile(

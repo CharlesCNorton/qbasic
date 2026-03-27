@@ -29,8 +29,21 @@ class ClassicMixin:
         self._user_fns: dict[str, dict[str, Any]] = {}
         self._select_stack: list[Any] = []
 
+    # Quantum state names recognized in DATA statements
+    _QUANTUM_STATES = {
+        '|0>': '0', '|1>': '1', '|+>': '+', '|->': '-',
+        '|0⟩': '0', '|1⟩': '1', '|+⟩': '+', '|-⟩': '-',
+        '|BELL>': 'BELL', '|GHZ>': 'GHZ', '|GHZ3>': 'GHZ3', '|GHZ4>': 'GHZ4',
+        '|W>': 'W', '|W3>': 'W3',
+    }
+
     def _collect_data(self) -> None:
-        """Scan program for DATA statements and build the data pool."""
+        """Scan program for DATA statements and build the data pool.
+
+        Recognizes quantum state names like |+>, |0>, |GHZ3> as special
+        string tokens that can trigger state preparation when READ assigns
+        them to a variable.
+        """
         self._data_pool = []
         self._data_ptr = 0
         for ln in sorted(self.program.keys()):
@@ -41,6 +54,8 @@ class ClassicMixin:
                     if (item.startswith('"') and item.endswith('"')) or \
                        (item.startswith("'") and item.endswith("'")):
                         self._data_pool.append(item[1:-1])
+                    elif item in self._QUANTUM_STATES:
+                        self._data_pool.append(f"QSTATE:{self._QUANTUM_STATES[item]}")
                     else:
                         try:
                             self._data_pool.append(float(item) if '.' in item else int(item))
