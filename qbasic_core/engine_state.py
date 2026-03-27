@@ -74,14 +74,21 @@ class Engine:
         self.agent_mode: bool = False
         self._include_stack: list[str] = []
 
+        # User-defined types
+        self._user_types: dict[str, list[tuple[str, str]]] = {}
+        self._pending_type: dict | None = None
+
         # Timing
         self._start_time: float = time.time()
 
     def _get_parsed(self, line_num: int) -> Any:
-        """Get parsed Stmt for a line, lazily parsing if needed."""
+        """Get parsed Stmt for a line, lazily parsing if needed.
+
+        Re-parses if the program text has changed since the last parse.
+        """
+        raw = self.program.get(line_num, '')
         p = self._parsed.get(line_num)
-        if p is None:
-            raw = self.program.get(line_num, '')
+        if p is None or p.raw != raw:
             p = parse_stmt(raw)
             self._parsed[line_num] = p
         return p

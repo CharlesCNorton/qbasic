@@ -68,7 +68,8 @@ RE_SWAP = re.compile(r'SWAP\s+(\w+\$?)\s*,\s*(\w+\$?)', re.IGNORECASE)
 RE_POKE = re.compile(r'POKE\s+(.+?)\s*,\s*(.+)', re.IGNORECASE)
 RE_SYS = re.compile(r'SYS\s+(.+)', re.IGNORECASE)
 RE_OPEN = re.compile(
-    r'OPEN\s+"?([^"]+)"?\s+FOR\s+(INPUT|OUTPUT|APPEND|RANDOM)\s+AS\s+#?(\d+)',
+    r'OPEN\s+"?([^"]+)"?\s+FOR\s+(INPUT|OUTPUT|APPEND|RANDOM)\s+AS\s+#?(\d+)'
+    r'(?:\s+ENCODING\s+"?([^"]*)"?)?',
     re.IGNORECASE)
 RE_CLOSE = re.compile(r'CLOSE\s+#?(\d+)', re.IGNORECASE)
 RE_PRINT_FILE = re.compile(r'PRINT\s+#(\d+)\s*,\s*(.*)', re.IGNORECASE)

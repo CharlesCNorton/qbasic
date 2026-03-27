@@ -25,6 +25,7 @@ class ClassicMixin:
     def _init_classic(self) -> None:
         self._data_pool: list[Any] = []
         self._data_ptr: int = 0
+        self._data_cache_key: tuple | None = None
         self._option_base: int = 0
         self._user_fns: dict[str, dict[str, Any]] = {}
         self._select_stack: list[Any] = []
@@ -43,11 +44,25 @@ class ClassicMixin:
         Recognizes quantum state names like |+>, |0>, |GHZ3> as special
         string tokens that can trigger state preparation when READ assigns
         them to a variable.
+
+        Caches the result keyed on DATA-containing lines so repeated RUN
+        calls skip the rescan when the program hasn't changed.
         """
+        # Build cache key from all DATA-containing lines
+        data_lines = []
+        for ln in sorted(self.program.keys()):
+            text = self.program[ln].strip()
+            if RE_DATA.match(text):
+                data_lines.append((ln, text))
+        cache_key = tuple(data_lines)
+        if cache_key == self._data_cache_key:
+            # Program DATA lines unchanged — just reset the read pointer
+            self._data_ptr = 0
+            return
         self._data_pool = []
         self._data_ptr = 0
-        for ln in sorted(self.program.keys()):
-            m = RE_DATA.match(self.program[ln].strip())
+        for _ln, text in data_lines:
+            m = RE_DATA.match(text)
             if m:
                 for item in m.group(1).split(','):
                     item = item.strip()
@@ -61,20 +76,24 @@ class ClassicMixin:
                             self._data_pool.append(float(item) if '.' in item else int(item))
                         except ValueError:
                             self._data_pool.append(item)
+        self._data_cache_key = cache_key
 
     # ── DATA / READ / RESTORE ──────────────────────────────────────────
 
-    def _cf_data(self, stmt: str) -> tuple[bool, ExecOutcome] | None:
+    def _cf_data(self, stmt: str, *, parsed=None) -> tuple[bool, ExecOutcome] | None:
         """DATA — skip during execution (collected before run)."""
-        if RE_DATA.match(stmt):
+        if parsed is not None or RE_DATA.match(stmt):
             return True, ExecResult.ADVANCE
         return None
 
-    def _cf_read(self, stmt: str, run_vars: dict[str, Any]) -> tuple[bool, ExecOutcome] | None:
-        m = RE_READ.match(stmt)
-        if not m:
-            return None
-        var_names = [v.strip() for v in m.group(1).split(',')]
+    def _cf_read(self, stmt: str, run_vars: dict[str, Any], *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is not None:
+            var_names = [v.strip() for v in parsed.var_list.split(',')]
+        else:
+            m = RE_READ.match(stmt)
+            if not m:
+                return None
+            var_names = [v.strip() for v in m.group(1).split(',')]
         for vname in var_names:
             if self._data_ptr >= len(self._data_pool):
                 raise RuntimeError("READ: OUT OF DATA")
@@ -91,12 +110,16 @@ class ClassicMixin:
     # ── ON expr GOTO / GOSUB ──────────────────────────────────────────
 
     def _cf_on_goto(self, stmt: str, run_vars: dict[str, Any],
-                    sorted_lines: list[int]) -> tuple[bool, ExecOutcome] | None:
-        m = RE_ON_GOTO.match(stmt)
-        if not m:
-            return None
-        idx = int(self._eval_with_vars(m.group(1).strip(), run_vars))
-        targets = [int(t.strip()) for t in m.group(2).split(',') if t.strip()]
+                    sorted_lines: list[int], *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is not None:
+            idx = int(self._eval_with_vars(parsed.expr, run_vars))
+            targets = list(parsed.targets)
+        else:
+            m = RE_ON_GOTO.match(stmt)
+            if not m:
+                return None
+            idx = int(self._eval_with_vars(m.group(1).strip(), run_vars))
+            targets = [int(t.strip()) for t in m.group(2).split(',') if t.strip()]
         if 1 <= idx <= len(targets):
             target = targets[idx - 1]
             for i, ln in enumerate(sorted_lines):
@@ -106,12 +129,16 @@ class ClassicMixin:
         return True, ExecResult.ADVANCE  # out of range: fall through
 
     def _cf_on_gosub(self, stmt: str, run_vars: dict[str, Any],
-                     sorted_lines: list[int], ip: int) -> tuple[bool, ExecOutcome] | None:
-        m = RE_ON_GOSUB.match(stmt)
-        if not m:
-            return None
-        idx = int(self._eval_with_vars(m.group(1).strip(), run_vars))
-        targets = [int(t.strip()) for t in m.group(2).split(',') if t.strip()]
+                     sorted_lines: list[int], ip: int, *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is not None:
+            idx = int(self._eval_with_vars(parsed.expr, run_vars))
+            targets = list(parsed.targets)
+        else:
+            m = RE_ON_GOSUB.match(stmt)
+            if not m:
+                return None
+            idx = int(self._eval_with_vars(m.group(1).strip(), run_vars))
+            targets = [int(t.strip()) for t in m.group(2).split(',') if t.strip()]
         if 1 <= idx <= len(targets):
             target = targets[idx - 1]
             self._gosub_stack.append(ip + 1)
@@ -124,11 +151,14 @@ class ClassicMixin:
     # ── SELECT CASE ───────────────────────────────────────────────────
 
     def _cf_select_case(self, stmt: str, run_vars: dict[str, Any],
-                        sorted_lines: list[int], ip: int) -> tuple[bool, ExecOutcome] | None:
-        m = RE_SELECT_CASE.match(stmt)
-        if not m:
-            return None
-        test_val = self._eval_with_vars(m.group(1).strip(), run_vars)
+                        sorted_lines: list[int], ip: int, *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is not None:
+            test_val = self._eval_with_vars(parsed.expr, run_vars)
+        else:
+            m = RE_SELECT_CASE.match(stmt)
+            if not m:
+                return None
+            test_val = self._eval_with_vars(m.group(1).strip(), run_vars)
         self._select_stack.append(test_val)
         # Scan forward for matching CASE
         scan = ip + 1
@@ -155,10 +185,11 @@ class ClassicMixin:
             scan += 1
         raise RuntimeError("SELECT CASE without END SELECT")
 
-    def _cf_case(self, stmt: str, sorted_lines: list[int], ip: int) -> tuple[bool, ExecOutcome] | None:
-        m = RE_CASE.match(stmt)
-        if not m:
-            return None
+    def _cf_case(self, stmt: str, sorted_lines: list[int], ip: int, *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is None:
+            m = RE_CASE.match(stmt)
+            if not m:
+                return None
         # If we reach a CASE during execution, skip to END SELECT (we already matched)
         depth = 1
         scan = ip + 1
@@ -175,8 +206,8 @@ class ClassicMixin:
             scan += 1
         return True, ExecResult.ADVANCE
 
-    def _cf_end_select(self, stmt: str) -> tuple[bool, ExecOutcome] | None:
-        if stmt.strip().upper() == 'END SELECT':
+    def _cf_end_select(self, stmt: str, *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is not None or stmt.strip().upper() == 'END SELECT':
             if self._select_stack:
                 self._select_stack.pop()
             return True, ExecResult.ADVANCE
@@ -200,12 +231,16 @@ class ClassicMixin:
 
     def _cf_do(self, stmt: str, run_vars: dict[str, Any],
                loop_stack: list[dict[str, Any]],
-               sorted_lines: list[int], ip: int) -> tuple[bool, ExecOutcome] | None:
-        m = RE_DO.match(stmt)
-        if not m:
-            return None
-        kind = m.group(1)  # WHILE or UNTIL or None
-        cond = m.group(2)  # condition or None
+               sorted_lines: list[int], ip: int, *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is not None:
+            kind = parsed.kind
+            cond = parsed.condition
+        else:
+            m = RE_DO.match(stmt)
+            if not m:
+                return None
+            kind = m.group(1)  # WHILE or UNTIL or None
+            cond = m.group(2)  # condition or None
         if kind and cond:
             # Pre-test
             result = self._eval_condition(cond, run_vars)
@@ -220,15 +255,21 @@ class ClassicMixin:
 
     def _cf_loop(self, stmt: str, run_vars: dict[str, Any],
                  loop_stack: list[dict[str, Any]],
-                 sorted_lines: list[int], ip: int) -> tuple[bool, ExecOutcome] | None:
-        m = RE_LOOP_STMT.match(stmt)
-        if not m:
-            return None
+                 sorted_lines: list[int], ip: int, *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is not None:
+            loop_kind = parsed.kind
+            loop_cond = parsed.condition
+        else:
+            m = RE_LOOP_STMT.match(stmt)
+            if not m:
+                return None
+            loop_kind = m.group(1)
+            loop_cond = m.group(2)
         # Only handle as DO/LOOP keyword if we're inside a DO block
         if not loop_stack or loop_stack[-1].get('type') != 'do':
             # Bare "LOOP" (no WHILE/UNTIL) that matches a SUB name should
             # be handed off to subroutine expansion, not treated as a keyword.
-            is_bare = m.group(1) is None  # no WHILE/UNTIL suffix
+            is_bare = loop_kind is None  # no WHILE/UNTIL suffix
             if is_bare and hasattr(self, '_sub_defs') and 'LOOP' in self._sub_defs:
                 return None  # let subroutine expansion handle it
             # Otherwise it's either bare LOOP with no sub, or LOOP WHILE/UNTIL
@@ -237,8 +278,8 @@ class ClassicMixin:
             return None
         loop = loop_stack[-1]
         # Post-test condition on LOOP
-        kind = m.group(1)
-        cond = m.group(2)
+        kind = loop_kind
+        cond = loop_cond
         if kind and cond:
             result = self._eval_condition(cond, run_vars)
             if kind.upper() == 'UNTIL':
@@ -264,11 +305,14 @@ class ClassicMixin:
     # ── EXIT ──────────────────────────────────────────────────────────
 
     def _cf_exit(self, stmt: str, loop_stack: list[dict[str, Any]],
-                 sorted_lines: list[int], ip: int) -> tuple[bool, ExecOutcome] | None:
-        m = RE_EXIT.match(stmt)
-        if not m:
-            return None
-        kind = m.group(1).upper()
+                 sorted_lines: list[int], ip: int, *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is not None:
+            kind = parsed.target
+        else:
+            m = RE_EXIT.match(stmt)
+            if not m:
+                return None
+            kind = m.group(1).upper()
         if kind == 'FOR':
             # Find matching NEXT
             scan = ip + 1
@@ -318,11 +362,14 @@ class ClassicMixin:
 
     # ── SWAP ──────────────────────────────────────────────────────────
 
-    def _cf_swap(self, stmt: str, run_vars: dict[str, Any]) -> tuple[bool, ExecOutcome] | None:
-        m = RE_SWAP.match(stmt)
-        if not m:
-            return None
-        a, b = m.group(1), m.group(2)
+    def _cf_swap(self, stmt: str, run_vars: dict[str, Any], *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is not None:
+            a, b = parsed.a, parsed.b
+        else:
+            m = RE_SWAP.match(stmt)
+            if not m:
+                return None
+            a, b = m.group(1), m.group(2)
         va = run_vars.get(a, self.variables.get(a, 0))
         vb = run_vars.get(b, self.variables.get(b, 0))
         run_vars[a] = vb
@@ -333,13 +380,18 @@ class ClassicMixin:
 
     # ── DEF FN ────────────────────────────────────────────────────────
 
-    def _cf_def_fn(self, stmt: str, run_vars: dict[str, Any]) -> tuple[bool, ExecOutcome] | None:
-        m = RE_DEF_FN.match(stmt)
-        if not m:
-            return None
-        name = 'FN' + m.group(1).upper()
-        params = [p.strip() for p in m.group(2).split(',') if p.strip()]
-        body = m.group(3).strip()
+    def _cf_def_fn(self, stmt: str, run_vars: dict[str, Any], *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is not None:
+            name = 'FN' + parsed.name.upper()
+            params = [p.strip() for p in parsed.params.split(',') if p.strip()]
+            body = parsed.body.strip()
+        else:
+            m = RE_DEF_FN.match(stmt)
+            if not m:
+                return None
+            name = 'FN' + m.group(1).upper()
+            params = [p.strip() for p in m.group(2).split(',') if p.strip()]
+            body = m.group(3).strip()
         self._user_fns[name] = {'params': params, 'body': body}
         return True, ExecResult.ADVANCE
 
@@ -355,9 +407,12 @@ class ClassicMixin:
 
     # ── OPTION BASE ───────────────────────────────────────────────────
 
-    def _cf_option_base(self, stmt: str) -> tuple[bool, ExecOutcome] | None:
-        m = RE_OPTION_BASE.match(stmt)
-        if not m:
-            return None
-        self._option_base = int(m.group(1))
+    def _cf_option_base(self, stmt: str, *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is not None:
+            self._option_base = parsed.base
+        else:
+            m = RE_OPTION_BASE.match(stmt)
+            if not m:
+                return None
+            self._option_base = int(m.group(1))
         return True, ExecResult.ADVANCE

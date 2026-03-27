@@ -7,6 +7,12 @@ import math
 from typing import Any
 
 
+class _NullIOPort:
+    def write(self, text): pass
+    def writeln(self, text): pass
+    def read_line(self, prompt): return ''
+
+
 class ProfilerMixin:
     """Profiling and statistics for QBasicTerminal.
 
@@ -98,15 +104,13 @@ class ProfilerMixin:
             self.io.writeln("?STATS needs at least 1 run")
             return
         self.io.writeln(f"\nRunning {n} trials...")
-        import io, sys
         for trial in range(n):
-            buf = io.StringIO()
-            old = sys.stdout
-            sys.stdout = buf
+            old_io = self.io
+            self.io = _NullIOPort()
             try:
                 self.cmd_run()
             finally:
-                sys.stdout = old
+                self.io = old_io
             if self.last_counts:
                 self._stats_runs.append(dict(self.last_counts))
             if n > 10 and (trial + 1) % (n // 10) == 0:

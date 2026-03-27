@@ -10,6 +10,7 @@ from qbasic_core.engine import (
     RE_SUB, RE_END_SUB, RE_FUNCTION, RE_END_FUNCTION,
     RE_CALL, RE_LOCAL, RE_STATIC_DECL, RE_SHARED,
 )
+from qbasic_core.exec_context import ExecContext
 
 
 class SubroutineMixin:
@@ -59,18 +60,21 @@ class SubroutineMixin:
 
     # ── Control flow handlers ──────────────────────────────────────────
 
-    def _cf_sub(self, stmt: str, sorted_lines: list[int], ip: int) -> tuple[bool, ExecOutcome] | None:
+    def _cf_sub(self, stmt: str, sorted_lines: list[int], ip: int, *, parsed=None) -> tuple[bool, ExecOutcome] | None:
         """SUB — skip the block during normal execution."""
-        m = RE_SUB.match(stmt)
-        if not m:
-            return None
-        name = m.group(1).upper()
+        if parsed is not None:
+            name = parsed.name
+        else:
+            m = RE_SUB.match(stmt)
+            if not m:
+                return None
+            name = m.group(1).upper()
         if name in self._sub_defs:
             return True, self._sub_defs[name]['end_ip'] + 1
         return True, ExecResult.ADVANCE
 
-    def _cf_end_sub(self, stmt: str) -> tuple[bool, ExecOutcome] | None:
-        if not RE_END_SUB.match(stmt):
+    def _cf_end_sub(self, stmt: str, *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is None and not RE_END_SUB.match(stmt):
             return None
         if self._call_stack:
             frame = self._call_stack.pop()
@@ -78,18 +82,21 @@ class SubroutineMixin:
             return True, frame['return_ip']
         return True, ExecResult.ADVANCE
 
-    def _cf_function(self, stmt: str, sorted_lines: list[int], ip: int) -> tuple[bool, ExecOutcome] | None:
+    def _cf_function(self, stmt: str, sorted_lines: list[int], ip: int, *, parsed=None) -> tuple[bool, ExecOutcome] | None:
         """FUNCTION — skip the block during normal execution."""
-        m = RE_FUNCTION.match(stmt)
-        if not m:
-            return None
-        name = m.group(1).upper()
+        if parsed is not None:
+            name = parsed.name
+        else:
+            m = RE_FUNCTION.match(stmt)
+            if not m:
+                return None
+            name = m.group(1).upper()
         if name in self._func_defs:
             return True, self._func_defs[name]['end_ip'] + 1
         return True, ExecResult.ADVANCE
 
-    def _cf_end_function(self, stmt: str) -> tuple[bool, ExecOutcome] | None:
-        if not RE_END_FUNCTION.match(stmt):
+    def _cf_end_function(self, stmt: str, *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is None and not RE_END_FUNCTION.match(stmt):
             return None
         if self._call_stack:
             frame = self._call_stack.pop()
@@ -102,12 +109,16 @@ class SubroutineMixin:
         return True, ExecResult.ADVANCE
 
     def _cf_call(self, stmt: str, run_vars: dict[str, Any],
-                 sorted_lines: list[int], ip: int) -> tuple[bool, ExecOutcome] | None:
-        m = RE_CALL.match(stmt)
-        if not m:
-            return None
-        name = m.group(1).upper()
-        arg_str = m.group(2) or ''
+                 sorted_lines: list[int], ip: int, *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is not None:
+            name = parsed.name
+            arg_str = parsed.args
+        else:
+            m = RE_CALL.match(stmt)
+            if not m:
+                return None
+            name = m.group(1).upper()
+            arg_str = m.group(2) or ''
         args = [self._eval_with_vars(a.strip(), run_vars)
                 for a in arg_str.split(',') if a.strip()] if arg_str.strip() else []
         if name not in self._sub_defs:
@@ -141,15 +152,18 @@ class SubroutineMixin:
         if uname in self._static_vars:
             for k, v in self._static_vars[uname].items():
                 self.variables[k] = v
-        ip = func['start_ip']
-        loop_stack: list[dict[str, Any]] = []
-        run_vars = dict(self.variables)
-        _iters = 0
-        while ip <= func['end_ip']:
-            _iters += 1
-            if _iters > self._max_iterations:
+        ctx = ExecContext(
+            sorted_lines=sorted_lines,
+            ip=func['start_ip'],
+            run_vars=dict(self.variables),
+            loop_stack=[],
+            max_iterations=self._max_iterations,
+        )
+        while ctx.ip <= func['end_ip']:
+            ctx.iteration_count += 1
+            if ctx.iteration_count > ctx.max_iterations:
                 raise RuntimeError("FUNCTION LOOP LIMIT")
-            stmt = self.program[sorted_lines[ip]].strip()
+            stmt = self.program[sorted_lines[ctx.ip]].strip()
             if RE_END_FUNCTION.match(stmt):
                 break
             # Use full control-flow dispatch for all statement types
@@ -159,39 +173,47 @@ class SubroutineMixin:
                     return result
                 return None
             handled, result = self._exec_control_flow(
-                stmt, loop_stack, sorted_lines, ip, run_vars, _fn_recurse)
+                stmt, ctx.loop_stack, sorted_lines, ctx.ip, ctx.run_vars, _fn_recurse)
             if handled:
                 if isinstance(result, int):
-                    ip = result
+                    ctx.ip = result
                     continue
                 elif result is ExecResult.END:
                     break
-            ip += 1
-        ret_val = self.variables.get(uname, run_vars.get(uname, 0))
+            ctx.ip += 1
+        ret_val = self.variables.get(uname, ctx.run_vars.get(uname, 0))
         self._pop_scope()
         return ret_val
 
     # ── LOCAL / STATIC / SHARED ────────────────────────────────────────
 
-    def _cf_local(self, stmt: str, run_vars: dict[str, Any]) -> tuple[bool, ExecOutcome] | None:
-        m = RE_LOCAL.match(stmt)
-        if not m:
-            return None
-        for vname in m.group(1).split(','):
+    def _cf_local(self, stmt: str, run_vars: dict[str, Any], *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is not None:
+            var_list = parsed.var_list
+        else:
+            m = RE_LOCAL.match(stmt)
+            if not m:
+                return None
+            var_list = m.group(1)
+        for vname in var_list.split(','):
             vname = vname.strip()
             if vname:
                 run_vars[vname] = 0
                 self.variables[vname] = 0
         return True, ExecResult.ADVANCE
 
-    def _cf_static(self, stmt: str, run_vars: dict[str, Any]) -> tuple[bool, ExecOutcome] | None:
-        m = RE_STATIC_DECL.match(stmt)
-        if not m:
-            return None
+    def _cf_static(self, stmt: str, run_vars: dict[str, Any], *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is not None:
+            var_list = parsed.var_list
+        else:
+            m = RE_STATIC_DECL.match(stmt)
+            if not m:
+                return None
+            var_list = m.group(1)
         sub_name = self._call_stack[-1]['sub_name'] if self._call_stack else '_GLOBAL'
         if sub_name not in self._static_vars:
             self._static_vars[sub_name] = {}
-        for vname in m.group(1).split(','):
+        for vname in var_list.split(','):
             vname = vname.strip()
             if vname:
                 val = self._static_vars[sub_name].get(vname, 0)
@@ -199,11 +221,15 @@ class SubroutineMixin:
                 self.variables[vname] = val
         return True, ExecResult.ADVANCE
 
-    def _cf_shared(self, stmt: str, run_vars: dict[str, Any]) -> tuple[bool, ExecOutcome] | None:
-        m = RE_SHARED.match(stmt)
-        if not m:
-            return None
-        for vname in m.group(1).split(','):
+    def _cf_shared(self, stmt: str, run_vars: dict[str, Any], *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is not None:
+            var_list = parsed.var_list
+        else:
+            m = RE_SHARED.match(stmt)
+            if not m:
+                return None
+            var_list = m.group(1)
+        for vname in var_list.split(','):
             vname = vname.strip()
             if vname and self._scope_stack and vname in self._scope_stack[-1]:
                 run_vars[vname] = self._scope_stack[-1].get(vname, 0)

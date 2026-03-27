@@ -274,6 +274,7 @@ class OpenStmt(Stmt):
     path: str
     mode: str
     handle: int
+    encoding: str | None = None
 
 @dataclass(frozen=True, slots=True)
 class CloseStmt(Stmt):
@@ -367,6 +368,15 @@ class AtRegStmt(Stmt):
 @dataclass(frozen=True, slots=True)
 class CompoundStmt(Stmt):
     parts: tuple[str, ...]
+
+
+# ── Gate application ───────────────────────────────────────────────────
+
+@dataclass(frozen=True, slots=True)
+class GateStmt(Stmt):
+    """Direct gate application: H 0, CX 0,1, RX PI/4, 0"""
+    name: str          # canonical gate name (after alias resolution)
+    args: tuple[str, ...]  # raw argument strings (params + qubits, unparsed)
 
 
 # ── Fallback ───────────────────────────────────────────────────────────

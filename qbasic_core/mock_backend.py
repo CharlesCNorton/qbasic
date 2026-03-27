@@ -33,8 +33,8 @@ class MockResult:
 
     def get_statevector(self):
         import numpy as np
-        sv = np.zeros(2**self._n, dtype=complex)
-        sv[0] = 1.0
+        dim = 2 ** self._n
+        sv = np.full(dim, 1.0 / np.sqrt(dim), dtype=complex)
         return sv
 
     def data(self) -> dict:

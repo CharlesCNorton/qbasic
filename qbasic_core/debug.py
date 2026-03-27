@@ -39,23 +39,30 @@ class DebugMixin:
 
     # ── Error handling ─────────────────────────────────────────────────
 
-    def _cf_on_error(self, stmt: str) -> tuple[bool, ExecOutcome] | None:
-        m = RE_ON_ERROR.match(stmt)
-        if not m:
-            return None
-        target = int(m.group(1))
+    def _cf_on_error(self, stmt: str, *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is not None:
+            target = parsed.target
+        else:
+            m = RE_ON_ERROR.match(stmt)
+            if not m:
+                return None
+            target = int(m.group(1))
         if target == 0:
             self._error_target = None
         else:
             self._error_target = target
         return True, ExecResult.ADVANCE
 
-    def _cf_resume(self, stmt: str, sorted_lines: list[int]) -> tuple[bool, ExecOutcome] | None:
-        m = RE_RESUME.match(stmt)
-        if not m:
-            return None
-        self._in_error_handler = False
-        arg = m.group(1)
+    def _cf_resume(self, stmt: str, sorted_lines: list[int], *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is not None:
+            self._in_error_handler = False
+            arg = parsed.arg
+        else:
+            m = RE_RESUME.match(stmt)
+            if not m:
+                return None
+            self._in_error_handler = False
+            arg = m.group(1)
         if arg is None or arg.strip() == '':
             # RESUME — retry the line that caused the error
             for i, ln in enumerate(sorted_lines):
@@ -74,11 +81,14 @@ class DebugMixin:
                 return True, i
         raise RuntimeError(f"RESUME: LINE {target} NOT FOUND")
 
-    def _cf_error(self, stmt: str) -> tuple[bool, ExecOutcome] | None:
-        m = RE_ERROR_STMT.match(stmt)
-        if not m:
-            return None
-        code = int(m.group(1))
+    def _cf_error(self, stmt: str, *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is not None:
+            code = parsed.code
+        else:
+            m = RE_ERROR_STMT.match(stmt)
+            if not m:
+                return None
+            code = int(m.group(1))
         raise RuntimeError(f"ERROR {code}")
 
     def _handle_error(self, err: Exception, line_num: int,
@@ -104,11 +114,14 @@ class DebugMixin:
 
     # ── ASSERT ─────────────────────────────────────────────────────────
 
-    def _cf_assert(self, stmt: str, run_vars: dict[str, Any]) -> tuple[bool, ExecOutcome] | None:
-        m = RE_ASSERT.match(stmt)
-        if not m:
-            return None
-        cond = m.group(1).strip()
+    def _cf_assert(self, stmt: str, run_vars: dict[str, Any], *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is not None:
+            cond = parsed.condition
+        else:
+            m = RE_ASSERT.match(stmt)
+            if not m:
+                return None
+            cond = m.group(1).strip()
         if not self._eval_condition(cond, run_vars):
             raise RuntimeError(f"ASSERTION FAILED: {cond}")
         return True, ExecResult.ADVANCE
@@ -176,8 +189,8 @@ class DebugMixin:
 
     # ── STOP / CONT ────────────────────────────────────────────────────
 
-    def _cf_stop(self, stmt: str, sorted_lines: list[int], ip: int) -> tuple[bool, ExecOutcome] | None:
-        if stmt.strip().upper() != 'STOP':
+    def _cf_stop(self, stmt: str, sorted_lines: list[int], ip: int, *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is None and stmt.strip().upper() != 'STOP':
             return None
         # CONT sets _cont_skip_stop_ip to replay past this STOP
         if self._cont_skip_stop_ip is not None and self._cont_skip_stop_ip == ip:
@@ -273,19 +286,26 @@ class DebugMixin:
 
     # ── Callbacks ──────────────────────────────────────────────────────
 
-    def _cf_on_measure(self, stmt: str) -> tuple[bool, ExecOutcome] | None:
-        m = RE_ON_MEASURE.match(stmt)
-        if not m:
-            return None
-        self._on_measure_target = int(m.group(1))
+    def _cf_on_measure(self, stmt: str, *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is not None:
+            self._on_measure_target = parsed.target
+        else:
+            m = RE_ON_MEASURE.match(stmt)
+            if not m:
+                return None
+            self._on_measure_target = int(m.group(1))
         return True, ExecResult.ADVANCE
 
-    def _cf_on_timer(self, stmt: str) -> tuple[bool, ExecOutcome] | None:
-        m = RE_ON_TIMER.match(stmt)
-        if not m:
-            return None
-        self._on_timer_interval = float(m.group(1))
-        self._on_timer_target = int(m.group(2))
+    def _cf_on_timer(self, stmt: str, *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        if parsed is not None:
+            self._on_timer_interval = float(parsed.interval)
+            self._on_timer_target = parsed.target
+        else:
+            m = RE_ON_TIMER.match(stmt)
+            if not m:
+                return None
+            self._on_timer_interval = float(m.group(1))
+            self._on_timer_target = int(m.group(2))
         self._on_timer_last = time.time()
         return True, ExecResult.ADVANCE
 

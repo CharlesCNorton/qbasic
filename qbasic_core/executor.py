@@ -148,7 +148,7 @@ class ExecutorMixin:
             CompoundStmt, AtRegStmt, GotoStmt, GosubStmt,
             ForStmt, NextStmt, WhileStmt, WendStmt, IfThenStmt,
             LetStmt, LetArrayStmt, PrintStmt,
-            RawStmt,
+            GateStmt, RawStmt,
         )
 
         # 1. Typed fast-path (no regex, no string manipulation)
@@ -319,35 +319,35 @@ class ExecutorMixin:
             StopStmt, OnMeasureStmt, OnTimerStmt,
         )
         _cf_map = {
-            DataStmt: lambda: self._cf_data(stmt),
-            ReadStmt: lambda: self._cf_read(stmt, run_vars),
-            OnGotoStmt: lambda: self._cf_on_goto(stmt, run_vars, sorted_lines),
-            OnGosubStmt: lambda: self._cf_on_gosub(stmt, run_vars, sorted_lines, ip),
-            SelectCaseStmt: lambda: self._cf_select_case(stmt, run_vars, sorted_lines, ip),
-            CaseStmt: lambda: self._cf_case(stmt, sorted_lines, ip),
-            EndSelectStmt: lambda: self._cf_end_select(stmt),
-            DoStmt: lambda: self._cf_do(stmt, run_vars, loop_stack, sorted_lines, ip),
-            LoopStmt: lambda: self._cf_loop(stmt, run_vars, loop_stack, sorted_lines, ip),
-            ExitStmt: lambda: self._cf_exit(stmt, loop_stack, sorted_lines, ip),
-            SwapStmt: lambda: self._cf_swap(stmt, run_vars),
-            DefFnStmt: lambda: self._cf_def_fn(stmt, run_vars),
-            OptionBaseStmt: lambda: self._cf_option_base(stmt),
+            DataStmt: lambda: self._cf_data(stmt, parsed=parsed),
+            ReadStmt: lambda: self._cf_read(stmt, run_vars, parsed=parsed),
+            OnGotoStmt: lambda: self._cf_on_goto(stmt, run_vars, sorted_lines, parsed=parsed),
+            OnGosubStmt: lambda: self._cf_on_gosub(stmt, run_vars, sorted_lines, ip, parsed=parsed),
+            SelectCaseStmt: lambda: self._cf_select_case(stmt, run_vars, sorted_lines, ip, parsed=parsed),
+            CaseStmt: lambda: self._cf_case(stmt, sorted_lines, ip, parsed=parsed),
+            EndSelectStmt: lambda: self._cf_end_select(stmt, parsed=parsed),
+            DoStmt: lambda: self._cf_do(stmt, run_vars, loop_stack, sorted_lines, ip, parsed=parsed),
+            LoopStmt: lambda: self._cf_loop(stmt, run_vars, loop_stack, sorted_lines, ip, parsed=parsed),
+            ExitStmt: lambda: self._cf_exit(stmt, loop_stack, sorted_lines, ip, parsed=parsed),
+            SwapStmt: lambda: self._cf_swap(stmt, run_vars, parsed=parsed),
+            DefFnStmt: lambda: self._cf_def_fn(stmt, run_vars, parsed=parsed),
+            OptionBaseStmt: lambda: self._cf_option_base(stmt, parsed=parsed),
             RestoreStmt: lambda: (True, ExecResult.ADVANCE),
-            SubStmt: lambda: self._cf_sub(stmt, sorted_lines, ip),
-            EndSubStmt: lambda: self._cf_end_sub(stmt),
-            FunctionStmt: lambda: self._cf_function(stmt, sorted_lines, ip),
-            EndFunctionStmt: lambda: self._cf_end_function(stmt),
-            CallStmt: lambda: self._cf_call(stmt, run_vars, sorted_lines, ip),
-            LocalStmt: lambda: self._cf_local(stmt, run_vars),
-            StaticStmt: lambda: self._cf_static(stmt, run_vars),
-            SharedStmt: lambda: self._cf_shared(stmt, run_vars),
-            OnErrorStmt: lambda: self._cf_on_error(stmt),
-            ResumeStmt: lambda: self._cf_resume(stmt, sorted_lines),
-            ErrorStmt: lambda: self._cf_error(stmt),
-            AssertStmt: lambda: self._cf_assert(stmt, run_vars),
-            StopStmt: lambda: self._cf_stop(stmt, sorted_lines, ip),
-            OnMeasureStmt: lambda: self._cf_on_measure(stmt),
-            OnTimerStmt: lambda: self._cf_on_timer(stmt),
+            SubStmt: lambda: self._cf_sub(stmt, sorted_lines, ip, parsed=parsed),
+            EndSubStmt: lambda: self._cf_end_sub(stmt, parsed=parsed),
+            FunctionStmt: lambda: self._cf_function(stmt, sorted_lines, ip, parsed=parsed),
+            EndFunctionStmt: lambda: self._cf_end_function(stmt, parsed=parsed),
+            CallStmt: lambda: self._cf_call(stmt, run_vars, sorted_lines, ip, parsed=parsed),
+            LocalStmt: lambda: self._cf_local(stmt, run_vars, parsed=parsed),
+            StaticStmt: lambda: self._cf_static(stmt, run_vars, parsed=parsed),
+            SharedStmt: lambda: self._cf_shared(stmt, run_vars, parsed=parsed),
+            OnErrorStmt: lambda: self._cf_on_error(stmt, parsed=parsed),
+            ResumeStmt: lambda: self._cf_resume(stmt, sorted_lines, parsed=parsed),
+            ErrorStmt: lambda: self._cf_error(stmt, parsed=parsed),
+            AssertStmt: lambda: self._cf_assert(stmt, run_vars, parsed=parsed),
+            StopStmt: lambda: self._cf_stop(stmt, sorted_lines, ip, parsed=parsed),
+            OnMeasureStmt: lambda: self._cf_on_measure(stmt, parsed=parsed),
+            OnTimerStmt: lambda: self._cf_on_timer(stmt, parsed=parsed),
         }
         handler = _cf_map.get(type(parsed))
         if handler is not None:
@@ -367,8 +367,32 @@ class ExecutorMixin:
                                 sorted_lines=sorted_lines, ip=ip, run_vars=run_vars)
             return ExecResult.ADVANCE
 
-        # 5. Gate application (through backend when available)
+        # 5. Gate application
         _backend = ctx.backend if ctx else None
+
+        # Fast path: GateStmt already parsed by the parser
+        if isinstance(parsed, GateStmt):
+            info = self._gate_info(parsed.name)
+            if info is not None:
+                n_params, n_qubits = info
+                args = list(parsed.args)
+                params = [self._eval_with_vars(a, run_vars) for a in args[:n_params]]
+                qubits = [self._resolve_qubit(a) for a in args[n_params:n_params + n_qubits]]
+                try:
+                    if _backend:
+                        _backend.apply_gate(parsed.name, tuple(params), qubits)
+                    else:
+                        self._apply_gate(qc, parsed.name, params, qubits)
+                except Exception as _gate_err:
+                    if 'duplicate' in str(_gate_err).lower():
+                        raise QBasicBuildError(
+                            f"duplicate qubit arguments in {parsed.name}"
+                        ) from None
+                    raise
+                return ExecResult.ADVANCE
+            # Fall through to _apply_gate_str for custom gates not in GATE_TABLE
+
+        # Slow path: subroutine expansion + gate dispatch
         expanded = self._expand_statement(stmt)
         for gate_str in expanded:
             self._apply_gate_str(gate_str, qc, backend=_backend)

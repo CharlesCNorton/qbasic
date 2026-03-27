@@ -23,7 +23,7 @@ from qbasic_core.engine import (
     RE_LET_STR, RE_DIM_MULTI, RE_MEASURE_BASIS, RE_SYNDROME,
 )
 from qbasic_core.statements import (
-    Stmt, RawStmt, RemStmt, MeasureStmt, EndStmt, ReturnStmt,
+    Stmt, RawStmt, GateStmt, RemStmt, MeasureStmt, EndStmt, ReturnStmt,
     BarrierStmt, WendStmt, RestoreStmt, EndSelectStmt, EndSubStmt,
     EndFunctionStmt, StopStmt,
     GotoStmt, GosubStmt, ForStmt, NextStmt, WhileStmt, IfThenStmt,
@@ -287,7 +287,8 @@ def parse_stmt(raw: str) -> Stmt:
     m = RE_OPEN.match(text)
     if m:
         return OpenStmt(raw=raw, path=m.group(1).strip(),
-                        mode=m.group(2).upper(), handle=int(m.group(3)))
+                        mode=m.group(2).upper(), handle=int(m.group(3)),
+                        encoding=m.group(4).strip() if m.group(4) else None)
     m = RE_CLOSE.match(text)
     if m:
         return CloseStmt(raw=raw, handle=int(m.group(1)))
@@ -347,5 +348,13 @@ def parse_stmt(raw: str) -> Stmt:
         if len(parts) > 1:
             return CompoundStmt(raw=raw, parts=tuple(parts))
 
-    # ── Fallback (gate applications, subroutine calls) ────────────
+    # ── Gate application ────────────────────────────────────────────
+    first_word = text.split(None, 1)[0].upper() if text.strip() else ''
+    canonical = GATE_ALIASES.get(first_word, first_word)
+    if canonical in GATE_TABLE:
+        rest_args = text.split(None, 1)[1].strip() if ' ' in text.strip() else ''
+        args = tuple(a.strip() for a in rest_args.replace(',', ' ').split() if a.strip())
+        return GateStmt(raw=raw, name=canonical, args=args)
+
+    # ── Fallback (subroutine calls, truly unrecognized) ─────────────
     return RawStmt(raw=raw)

@@ -7,7 +7,7 @@ import re
 import hashlib
 from typing import Any
 
-from qbasic_core.engine import RE_CHAIN, RE_MERGE
+from qbasic_core.engine import RE_CHAIN, RE_MERGE, RE_DEF_BEGIN
 
 
 class ProgramMgmtMixin:
@@ -234,10 +234,33 @@ class ProgramMgmtMixin:
         saved_vars = dict(self.variables)
         self.program.clear()
         with open(path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.rstrip('\n\r')
-                if line and not line.startswith('#'):
-                    self.process(line, track_undo=False)
+            lines = [l.rstrip('\n\r') for l in f.readlines()]
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            if not line or line.startswith('#'):
+                i += 1
+                continue
+            if re.match(r'DEF\s+BEGIN\s+', line, re.IGNORECASE):
+                m = RE_DEF_BEGIN.match(line)
+                if m:
+                    name = m.group(1).upper()
+                    params = [p.strip() for p in m.group(2).split(',')] if m.group(2) else []
+                    body = []
+                    i += 1
+                    while i < len(lines):
+                        bl = lines[i].strip()
+                        if bl.upper() in ('DEF END', 'END'):
+                            break
+                        if bl and not bl.startswith('#'):
+                            body.append(bl)
+                        i += 1
+                    body_str = ' : '.join(body)
+                    param_str = f"({', '.join(params)})" if params else ""
+                    self.process(f"DEF {name}{param_str} = {body_str}", track_undo=False)
+            else:
+                self.process(line, track_undo=False)
+            i += 1
         self.variables.update(saved_vars)
         self.io.writeln(f"CHAINED {path}")
         if self.program:
@@ -262,9 +285,81 @@ class ProgramMgmtMixin:
             return
         count = 0
         with open(path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.rstrip('\n\r')
-                if line and not line.startswith('#'):
-                    self.process(line, track_undo=False)
+            lines = [l.rstrip('\n\r') for l in f.readlines()]
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            if not line or line.startswith('#'):
+                i += 1
+                continue
+            if re.match(r'DEF\s+BEGIN\s+', line, re.IGNORECASE):
+                m = RE_DEF_BEGIN.match(line)
+                if m:
+                    name = m.group(1).upper()
+                    params = [p.strip() for p in m.group(2).split(',')] if m.group(2) else []
+                    body = []
+                    i += 1
+                    while i < len(lines):
+                        bl = lines[i].strip()
+                        if bl.upper() in ('DEF END', 'END'):
+                            break
+                        if bl and not bl.startswith('#'):
+                            body.append(bl)
+                        i += 1
+                    body_str = ' : '.join(body)
+                    param_str = f"({', '.join(params)})" if params else ""
+                    self.process(f"DEF {name}{param_str} = {body_str}", track_undo=False)
                     count += 1
+            else:
+                self.process(line, track_undo=False)
+                count += 1
+            i += 1
         self.io.writeln(f"MERGED {path} ({count} lines)")
+
+    # ── Introspection ─────────────────────────────────────────────────
+
+    def cmd_defs(self) -> None:
+        """List all defined subroutines."""
+        if not self.subroutines:
+            self.io.writeln("NO SUBROUTINES DEFINED")
+            return
+        for name, sub in self.subroutines.items():
+            if isinstance(sub, list):
+                self.io.writeln(f"  {name} = {' : '.join(sub)}")
+            else:
+                params = f"({', '.join(sub['params'])})" if sub['params'] else ""
+                self.io.writeln(f"  {name}{params} = {' : '.join(sub['body'])}")
+
+    def cmd_regs(self) -> None:
+        """List all named registers with their qubit ranges."""
+        if not self.registers:
+            self.io.writeln("NO REGISTERS DEFINED")
+            return
+        for name, (start, size) in self.registers.items():
+            self.io.writeln(f"  {name}[0:{size}] -> qubits {start}-{start+size-1}")
+
+    def cmd_vars(self) -> None:
+        """List all variables and their current values."""
+        if not self.variables:
+            self.io.writeln("NO VARIABLES SET")
+            return
+        for name, val in self.variables.items():
+            self.io.writeln(f"  {name} = {val}")
+
+    def cmd_clear(self, rest: str) -> None:
+        """CLEAR var — remove a variable. CLEAR ARRAYS — clear all arrays."""
+        name = rest.strip()
+        if not name:
+            self.io.writeln("?USAGE: CLEAR <var> or CLEAR ARRAYS")
+            return
+        if name.upper() == 'ARRAYS':
+            self.arrays.clear()
+            self.io.writeln("ARRAYS CLEARED")
+        elif name in self.variables:
+            del self.variables[name]
+            self.io.writeln(f"CLEARED {name}")
+        elif name in self.arrays:
+            del self.arrays[name]
+            self.io.writeln(f"CLEARED array {name}")
+        else:
+            self.io.writeln(f"?{name} NOT FOUND")

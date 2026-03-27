@@ -17,9 +17,6 @@ LOCC_MAX_REGISTERS = 26
 LOCC_SEND_SHOT_CAP = 100
 LOCC_SEND_QUBIT_THRESHOLD = 20
 
-# Realistic multiplier for statevector simulation overhead.
-OVERHEAD_FACTOR = 3.0
-
 
 class LOCCEngine:
     """N-register quantum simulation with classical channels.
@@ -189,6 +186,7 @@ class LOCCEngine:
 
     def mem_gb(self) -> tuple[float, float]:  # (total_gb, peak_gb)
         """Return (total_gb, peak_gb) realistic memory estimates including overhead."""
+        from qbasic_core.engine import OVERHEAD_FACTOR
         if self.joint:
             total = (2**self.n_total) * 16 * OVERHEAD_FACTOR / 1e9
             return total, total

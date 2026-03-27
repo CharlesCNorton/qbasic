@@ -298,12 +298,13 @@ class FileIOMixin:
         return resolved
 
     def cmd_open(self, rest: str) -> None:
-        """OPEN file FOR INPUT|OUTPUT|APPEND AS #n"""
+        """OPEN file FOR INPUT|OUTPUT|APPEND AS #n [ENCODING "enc"]"""
         m = RE_OPEN.match(f"OPEN {rest}")
         if not m:
-            self.io.writeln("?USAGE: OPEN \"file\" FOR INPUT|OUTPUT|APPEND AS #n")
+            self.io.writeln('?USAGE: OPEN "file" FOR INPUT|OUTPUT|APPEND AS #n [ENCODING "enc"]')
             return
         path, mode_str, handle = m.group(1).strip(), m.group(2).upper(), int(m.group(3))
+        encoding = m.group(4).strip() if m.group(4) else 'utf-8'
         try:
             path = self._sanitize_path(path)
         except ValueError as e:
@@ -316,9 +317,15 @@ class FileIOMixin:
         mode_map = {'INPUT': 'r', 'OUTPUT': 'w', 'APPEND': 'a', 'RANDOM': 'r+'}
         mode = mode_map.get(mode_str, 'r')
         try:
-            if mode_str == 'RANDOM' and not os.path.isfile(path):
-                open(path, 'w', encoding='utf-8').close()
-            self._file_handles[handle] = open(path, mode, encoding='utf-8')
+            if encoding.lower() == 'binary':
+                bin_mode = mode + 'b'
+                if mode_str == 'RANDOM' and not os.path.isfile(path):
+                    open(path, 'wb').close()
+                self._file_handles[handle] = open(path, bin_mode)
+            else:
+                if mode_str == 'RANDOM' and not os.path.isfile(path):
+                    open(path, 'w', encoding=encoding).close()
+                self._file_handles[handle] = open(path, mode, encoding=encoding)
             self.io.writeln(f"OPENED #{handle} ({path}, {mode_str})")
         except Exception as e:
             self.io.writeln(f"?OPEN ERROR: {e}")

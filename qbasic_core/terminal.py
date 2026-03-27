@@ -4,11 +4,14 @@ import sys
 import os
 import re
 import time
-import textwrap
 from collections import OrderedDict
 
 from qiskit import QuantumCircuit, transpile
 from qiskit_aer import AerSimulator
+try:
+    from qiskit_aer import AerError
+except ImportError:
+    AerError = None
 import numpy as np
 
 from qbasic_core.engine import (
@@ -16,7 +19,7 @@ from qbasic_core.engine import (
     ExecResult,
     _np_gate_matrix, _get_ram_gb, _estimate_gb,
     MAX_QUBITS, DEFAULT_QUBITS, DEFAULT_SHOTS, MAX_UNDO_STACK,
-    MAX_LOOP_ITERATIONS, MAX_BLOCH_DISPLAY,
+    MAX_LOOP_ITERATIONS,
     OVERHEAD_FACTOR, RAM_BUDGET_FRACTION,
     RE_LINE_NUM, RE_DEF_SINGLE, RE_DEF_BEGIN, RE_REG_INDEX,
     RE_AT_REG, RE_AT_REG_LINE,
@@ -52,10 +55,13 @@ from qbasic_core.subs import SubroutineMixin
 from qbasic_core.debug import DebugMixin
 from qbasic_core.program_mgmt import ProgramMgmtMixin
 from qbasic_core.profiler import ProfilerMixin
+from qbasic_core.noise_mixin import NoiseMixin
+from qbasic_core.state_display import StateDisplayMixin
 from qbasic_core.errors import QBasicError, QBasicBuildError, QBasicRangeError
 from qbasic_core.io_protocol import StdIOPort
 from qbasic_core.parser import parse_stmt
 from qbasic_core.engine_state import Engine
+from qbasic_core.help_text import HELP_TEXT, BANNER_ART
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -81,6 +87,26 @@ def _resolve_named_state(name: str, n_qubits: int) -> np.ndarray:
     elif name == '|GHZ>':
         sv[0] = 1.0 / np.sqrt(2)
         sv[dim - 1] = 1.0 / np.sqrt(2)
+    elif name == '|GHZ3>':
+        if dim >= 8:
+            sv[0] = 1.0 / np.sqrt(2)
+            sv[7] = 1.0 / np.sqrt(2)
+        else:
+            sv[0] = 1.0  # fallback to |0>
+    elif name == '|GHZ4>':
+        if dim >= 16:
+            sv[0] = 1.0 / np.sqrt(2)
+            sv[15] = 1.0 / np.sqrt(2)
+        else:
+            sv[0] = 1.0  # fallback to |0>
+    elif name in ('|W>', '|W3>'):
+        if dim >= 8:
+            sv[1] = 1.0 / np.sqrt(3)
+            sv[2] = 1.0 / np.sqrt(3)
+            sv[4] = 1.0 / np.sqrt(3)
+        else:
+            # fallback: equal superposition of available states
+            sv[:] = 1.0 / np.sqrt(dim)
     else:
         sv[0] = 1.0
     return sv
@@ -93,7 +119,8 @@ def _resolve_named_state(name: str, n_qubits: int) -> np.ndarray:
 class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoMixin,
                      LOCCMixin, ControlFlowMixin, FileIOMixin, AnalysisMixin,
                      SweepMixin, MemoryMixin, StringMixin, ScreenMixin, ClassicMixin,
-                     SubroutineMixin, DebugMixin, ProgramMgmtMixin, ProfilerMixin):
+                     SubroutineMixin, DebugMixin, ProgramMgmtMixin, ProfilerMixin,
+                     NoiseMixin, StateDisplayMixin):
     # Method organization uses the mixin pattern to reduce apparent class
     # size while keeping everything on QBasicTerminal for import compat.
     #
@@ -217,6 +244,10 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
 
     def process(self, line: str, *, track_undo: bool = True) -> None:
         """Process a line of input (numbered line or immediate command)."""
+        # Accumulate TYPE fields when a pending TYPE definition is active
+        if self._pending_type is not None:
+            self._accumulate_type_field(line)
+            return
         # Line number -> store in program
         m = RE_LINE_NUM.match(line)
         if m:
@@ -446,6 +477,37 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
                 new_target = line_map.get(target, target)
                 return f"{m.group(1)} {new_target}"
             stmt = RE_GOTO_GOSUB_TARGET.sub(replace_target, stmt)
+
+            # Update ON ... GOTO/GOSUB comma-separated target lists.
+            # RE_GOTO_GOSUB_TARGET remaps the first number after GOTO/GOSUB,
+            # but ON x GOTO 100, 200, 300 leaves the ", 200, 300" tail
+            # untouched.  Walk any trailing comma-separated numbers and
+            # remap them too.
+            def _remap_on_target_list(m):
+                keyword = m.group(1)          # GOTO or GOSUB
+                nums_str = m.group(2)         # "10, 20, 30"
+                parts = nums_str.split(',')
+                remapped = []
+                for p in parts:
+                    stripped = p.strip()
+                    if stripped.isdigit():
+                        n = int(stripped)
+                        remapped.append(str(line_map.get(n, n)))
+                    else:
+                        remapped.append(p)
+                return f"{keyword} {', '.join(remapped)}"
+            stmt = re.sub(
+                r'(GOTO|GOSUB)\s+(\d+(?:\s*,\s*\d+)+)',
+                _remap_on_target_list, stmt, flags=re.IGNORECASE)
+
+            # Update RESUME <line-number> targets.
+            def _remap_resume(m):
+                target = int(m.group(1))
+                return f"RESUME {line_map.get(target, target)}"
+            stmt = re.sub(
+                r'\bRESUME\s+(\d+)', _remap_resume, stmt,
+                flags=re.IGNORECASE)
+
             new_prog[line_map[old]] = stmt
         self.program = new_prog
         self._parsed = {num: parse_stmt(s) for num, s in new_prog.items()}
@@ -515,32 +577,40 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
                END TYPE
         Then: DIM p AS Point
               LET p.x = 3.14
+
+        Works both interactively (REPL) and non-interactively (LOAD/INCLUDE).
+        In non-interactive mode, subsequent lines are routed through process()
+        which delegates to _accumulate_type_field until END TYPE is seen.
         """
-        from qbasic_core.engine import RE_TYPE_BEGIN, RE_TYPE_FIELD, RE_END_TYPE
+        from qbasic_core.engine import RE_TYPE_BEGIN
         m = RE_TYPE_BEGIN.match(f"TYPE {rest}")
         if not m:
             self.io.writeln("?USAGE: TYPE <name>")
             return
         type_name = m.group(1).upper()
-        fields = []
+        # Always use the accumulation path — works for both REPL and scripts.
+        # In REPL, repl() calls process() per line, which feeds _accumulate_type_field.
+        # In scripts, cmd_load/cmd_include call process() per line likewise.
+        self._pending_type = {'name': type_name, 'fields': []}
         self.io.writeln(f"  TYPE {type_name} (enter fields, END TYPE to finish)")
-        while True:
-            try:
-                line = self.io.read_line('  . ').strip()
-            except (KeyboardInterrupt, EOFError):
-                self.io.writeln("\n  CANCELLED")
-                return
-            if RE_END_TYPE.match(line):
-                break
-            fm = RE_TYPE_FIELD.match(line)
-            if fm:
-                fields.append((fm.group(1).lower(), fm.group(2).upper()))
-            elif line:
-                self.io.writeln(f"  ?EXPECTED: <name> AS <type>")
-        if not hasattr(self, '_user_types'):
-            self._user_types = {}
-        self._user_types[type_name] = fields
-        self.io.writeln(f"TYPE {type_name} ({len(fields)} fields)")
+
+    def _accumulate_type_field(self, line: str) -> None:
+        """Accumulate a field for a pending TYPE definition, or finalize on END TYPE."""
+        from qbasic_core.engine import RE_TYPE_FIELD, RE_END_TYPE
+        stripped = line.strip()
+        if RE_END_TYPE.match(stripped):
+            # Finalize the type definition
+            type_name = self._pending_type['name']
+            fields = self._pending_type['fields']
+            self._pending_type = None
+            self._user_types[type_name] = fields
+            self.io.writeln(f"TYPE {type_name} ({len(fields)} fields)")
+            return
+        fm = RE_TYPE_FIELD.match(stripped)
+        if fm:
+            self._pending_type['fields'].append((fm.group(1).lower(), fm.group(2).upper()))
+        elif stripped:
+            self.io.writeln(f"  ?EXPECTED: <name> AS <type>")
 
     def cmd_circuit_def(self, rest: str) -> None:
         """CIRCUIT_DEF name start-end — define a circuit macro from line range."""
@@ -606,33 +676,7 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
         self.variables[name] = val
         self.io.writeln(f"{name} = {val}")
 
-    def cmd_defs(self) -> None:
-        """List all defined subroutines."""
-        if not self.subroutines:
-            self.io.writeln("NO SUBROUTINES DEFINED")
-            return
-        for name, sub in self.subroutines.items():
-            if isinstance(sub, list):
-                self.io.writeln(f"  {name} = {' : '.join(sub)}")
-            else:
-                params = f"({', '.join(sub['params'])})" if sub['params'] else ""
-                self.io.writeln(f"  {name}{params} = {' : '.join(sub['body'])}")
-
-    def cmd_regs(self) -> None:
-        """List all named registers with their qubit ranges."""
-        if not self.registers:
-            self.io.writeln("NO REGISTERS DEFINED")
-            return
-        for name, (start, size) in self.registers.items():
-            self.io.writeln(f"  {name}[0:{size}] -> qubits {start}-{start+size-1}")
-
-    def cmd_vars(self) -> None:
-        """List all variables and their current values."""
-        if not self.variables:
-            self.io.writeln("NO VARIABLES SET")
-            return
-        for name, val in self.variables.items():
-            self.io.writeln(f"  {name} = {val}")
+    # cmd_defs, cmd_regs, cmd_vars provided by ProgramMgmtMixin.
 
     # ── Run ───────────────────────────────────────────────────────────
 
@@ -716,7 +760,9 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
             try:
                 result = backend.run(qc_t, shots=self.shots).result()
             except Exception as _sim_err:
-                if 'stabilizer' in str(_sim_err).lower():
+                _err_msg = str(_sim_err).lower()
+                if (AerError is not None and isinstance(_sim_err, AerError) and 'stabilizer' in _err_msg) or \
+                   ('stabilizer' in _err_msg and 'invalid parameters' in _err_msg):
                     self._circuit_cache_key = None
                     self._circuit_cache = None
                     sv_opts = {k: v for k, v in backend_opts.items()
@@ -1406,7 +1452,8 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
             sv_expr = m.group(1).strip()
             dim = 2 ** self.num_qubits
             # Try named states first
-            if sv_expr.upper() in ('|0>', '|1>', '|+>', '|->', '|BELL>', '|GHZ>'):
+            if sv_expr.upper() in ('|0>', '|1>', '|+>', '|->', '|BELL>', '|GHZ>',
+                                  '|GHZ3>', '|GHZ4>', '|W>', '|W3>'):
                 sv_flat = _resolve_named_state(sv_expr.upper(), self.num_qubits)
             else:
                 sv_list = self._parse_matrix(sv_expr)
@@ -1490,141 +1537,9 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
                     break
         return " ".join(parts) if parts else "|0\u27E9"
 
-    def cmd_state(self, rest: str = '') -> None:
-        if self.locc_mode:
-            return self._locc_state(rest)
-        if self.last_sv is None:
-            self.io.writeln("?NO STATE — RUN first")
-            return
-        self._print_statevector(self.last_sv)
+    # cmd_state, cmd_hist, cmd_probs, cmd_bloch, cmd_circuit provided by StateDisplayMixin.
 
-    # _locc_state and _locc_bloch provided by LOCCMixin.
-
-    def cmd_hist(self) -> None:
-        if self.last_counts is None:
-            self.io.writeln("?NO RESULTS — RUN first")
-            return
-        self.print_histogram(self.last_counts)
-
-    def cmd_probs(self) -> None:
-        if self.last_sv is None:
-            self.io.writeln("?NO STATE — RUN first")
-            return
-        self._print_probs(self.last_sv)
-
-    def cmd_bloch(self, rest: str) -> None:
-        if self.locc_mode:
-            return self._locc_bloch(rest)
-        if self.last_sv is None:
-            self.io.writeln("?NO STATE — RUN first")
-            return
-        if rest:
-            q = int(rest)
-            self._print_bloch_single(self.last_sv, q)
-        else:
-            for q in range(min(self.num_qubits, MAX_BLOCH_DISPLAY)):
-                self._print_bloch_single(self.last_sv, q)
-                if q < min(self.num_qubits, MAX_BLOCH_DISPLAY) - 1:
-                    self.io.writeln('')
-
-    def cmd_circuit(self) -> None:
-        if self.last_circuit is None:
-            self.io.writeln("?NO CIRCUIT — RUN first")
-            return
-        try:
-            self.io.writeln(self.last_circuit.draw(output='text'))
-        except Exception:
-            self.io.writeln(f"Circuit: {self.last_circuit.num_qubits} qubits, "
-                           f"depth {self.last_circuit.depth()}, "
-                           f"{self.last_circuit.size()} gates")
-
-    def cmd_noise(self, rest: str) -> None:
-        """NOISE <type> <params> — set noise model.
-
-        Types:
-          off                          Disable noise
-          depolarizing <p>             Depolarizing channel (all gates)
-          amplitude_damping <p>        T1-like decay
-          phase_flip <p>               T2-like dephasing
-          thermal <T1> <T2> <t_gate>   Physical decoherence (microseconds)
-          readout <p0> <p1>            Measurement bit-flip error
-          combined <p_amp> <p_phase>   Amplitude + phase damping
-          pauli <px> <py> <pz>         General Pauli channel
-          reset <p0> <p1>              Spontaneous reset error
-        """
-        if not rest or rest.strip().upper() == 'OFF':
-            self._noise_model = None
-            self.io.writeln("NOISE OFF")
-            return
-        parts = rest.split()
-        ntype = parts[0].lower()
-        try:
-            from qiskit_aer.noise import (
-                NoiseModel, depolarizing_error, amplitude_damping_error,
-                phase_damping_error, thermal_relaxation_error,
-                phase_amplitude_damping_error, ReadoutError,
-                pauli_error, reset_error,
-            )
-            nm = NoiseModel()
-            _1q = ['h', 'x', 'y', 'z', 's', 't', 'sdg', 'tdg',
-                   'sx', 'rx', 'ry', 'rz', 'p', 'u', 'id']
-            _2q = ['cx', 'cy', 'cz', 'ch', 'swap', 'dcx', 'iswap',
-                   'crx', 'cry', 'crz', 'cp', 'rxx', 'ryy', 'rzz']
-            _3q = ['ccx', 'cswap']
-            if ntype == 'depolarizing':
-                p = float(parts[1]) if len(parts) > 1 else 0.01
-                nm.add_all_qubit_quantum_error(depolarizing_error(p, 1), _1q)
-                nm.add_all_qubit_quantum_error(depolarizing_error(p, 2), _2q)
-                nm.add_all_qubit_quantum_error(depolarizing_error(p, 3), _3q)
-                self.io.writeln(f"NOISE depolarizing p={p}")
-            elif ntype == 'amplitude_damping':
-                p = float(parts[1]) if len(parts) > 1 else 0.01
-                nm.add_all_qubit_quantum_error(amplitude_damping_error(p), _1q)
-                self.io.writeln(f"NOISE amplitude_damping p={p}")
-            elif ntype == 'phase_flip':
-                p = float(parts[1]) if len(parts) > 1 else 0.01
-                nm.add_all_qubit_quantum_error(phase_damping_error(p), _1q)
-                self.io.writeln(f"NOISE phase_flip p={p}")
-            elif ntype == 'thermal':
-                t1 = float(parts[1]) if len(parts) > 1 else 50e-6
-                t2 = float(parts[2]) if len(parts) > 2 else 70e-6
-                tg = float(parts[3]) if len(parts) > 3 else 1e-6
-                err = thermal_relaxation_error(t1, t2, tg)
-                nm.add_all_qubit_quantum_error(err, _1q)
-                self.io.writeln(f"NOISE thermal T1={t1} T2={t2} t_gate={tg}")
-            elif ntype == 'readout':
-                p0 = float(parts[1]) if len(parts) > 1 else 0.05
-                p1 = float(parts[2]) if len(parts) > 2 else 0.1
-                re = ReadoutError([[1 - p0, p0], [p1, 1 - p1]])
-                nm.add_all_qubit_readout_error(re)
-                self.io.writeln(f"NOISE readout p0={p0} p1={p1}")
-            elif ntype == 'combined':
-                pa = float(parts[1]) if len(parts) > 1 else 0.01
-                pp = float(parts[2]) if len(parts) > 2 else 0.01
-                nm.add_all_qubit_quantum_error(
-                    phase_amplitude_damping_error(pa, pp), _1q)
-                self.io.writeln(f"NOISE combined amp={pa} phase={pp}")
-            elif ntype == 'pauli':
-                px = float(parts[1]) if len(parts) > 1 else 0.01
-                py = float(parts[2]) if len(parts) > 2 else 0.01
-                pz = float(parts[3]) if len(parts) > 3 else 0.01
-                pi = max(0, 1.0 - px - py - pz)
-                err = pauli_error([('X', px), ('Y', py), ('Z', pz), ('I', pi)])
-                nm.add_all_qubit_quantum_error(err, _1q)
-                self.io.writeln(f"NOISE pauli px={px} py={py} pz={pz}")
-            elif ntype == 'reset':
-                p0 = float(parts[1]) if len(parts) > 1 else 0.01
-                p1 = float(parts[2]) if len(parts) > 2 else 0.01
-                nm.add_all_qubit_quantum_error(reset_error(p0, p1), _1q)
-                self.io.writeln(f"NOISE reset p0={p0} p1={p1}")
-            else:
-                self.io.writeln(f"?UNKNOWN NOISE TYPE: {ntype}")
-                self.io.writeln("  Types: depolarizing, amplitude_damping, phase_flip, thermal,")
-                self.io.writeln("         readout, combined, pauli, reset")
-                return
-            self._noise_model = nm
-        except ImportError:
-            self.io.writeln("?Noise model requires qiskit-aer noise module")
+    # cmd_noise provided by NoiseMixin.
 
     # cmd_expect, cmd_entropy, cmd_csv, cmd_density provided by AnalysisMixin / FileIOMixin.
 
@@ -1671,23 +1586,7 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
 
     # cmd_bench, cmd_ram, cmd_dir provided by AnalysisMixin / FileIOMixin.
 
-    def cmd_clear(self, rest: str) -> None:
-        """CLEAR var — remove a variable. CLEAR ARRAYS — clear all arrays."""
-        name = rest.strip()
-        if not name:
-            self.io.writeln("?USAGE: CLEAR <var> or CLEAR ARRAYS")
-            return
-        if name.upper() == 'ARRAYS':
-            self.arrays.clear()
-            self.io.writeln("ARRAYS CLEARED")
-        elif name in self.variables:
-            del self.variables[name]
-            self.io.writeln(f"CLEARED {name}")
-        elif name in self.arrays:
-            del self.arrays[name]
-            self.io.writeln(f"CLEARED array {name}")
-        else:
-            self.io.writeln(f"?{name} NOT FOUND")
+    # cmd_clear provided by ProgramMgmtMixin.
 
     def cmd_undo(self) -> None:
         if not self._undo_stack:
@@ -1705,149 +1604,7 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
     # ── Help ──────────────────────────────────────────────────────────
 
     def cmd_help(self) -> None:
-        self.io.writeln(textwrap.dedent("""
-        QBASIC — Quantum BASIC Terminal
-        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-        PROGRAM EDITING
-          10 H 0              Enter a numbered line (program statement)
-          10                  Delete line 10
-          LIST                Show the program
-          DELETE 10           Delete line 10
-          DELETE 10-50        Delete range
-          RENUM               Renumber lines (10, 20, 30, ...)
-          NEW                 Clear everything
-          SAVE <file>          Save program to .qb file
-          LOAD <file>          Load program from .qb file
-          RUN                 Execute the program
-
-        GATES (immediate or in a program)
-          H 0                 Hadamard on qubit 0
-          X 0 / Y 0 / Z 0    Pauli gates
-          S 0 / T 0           Phase gates (and SDG, TDG)
-          RX PI/4, 0          Rotation gates (RX, RY, RZ, P)
-          CX 0, 1             CNOT (control, target)
-          CZ 0, 1             Controlled-Z
-          CCX 0, 1, 2         Toffoli
-          SWAP 0, 1           Swap two qubits
-          MEASURE             Add measurements (use in program)
-
-        MULTI-GATE LINES
-          10 H 0 : CX 0,1    Multiple gates on one line with ':'
-
-        REGISTERS & SUBROUTINES
-          REG data 3          Name a group of qubits
-          10 H data[0]        Use register notation
-          REGS                List registers
-          DEF BELL = H 0 : CX 0,1
-                              Define a named gate sequence
-          10 BELL             Use it in a program
-          10 BELL @2          Use with qubit offset
-          DEFS                List subroutines
-
-        VARIABLES & LOOPS
-          LET angle = PI/4    Set a variable
-          10 RX angle, 0      Use in gate parameters
-          10 FOR I = 0 TO 3   Loop (variable substitution in body)
-          20   H I
-          30 NEXT I
-          VARS                List variables
-
-        DISPLAY
-          STATE               Show statevector (after RUN)
-          HIST                Show measurement histogram
-          PROBS               Show probability distribution
-          BLOCH [n]           ASCII Bloch sphere for qubit n (or all)
-          STEP                Step through program with state display
-          CIRCUIT             Show circuit diagram
-
-        CONFIGURATION
-          QUBITS n            Set number of qubits (default: 4)
-          SHOTS n             Set number of shots (default: 1024)
-          METHOD name         Set simulation method (automatic, statevector,
-                              matrix_product_state, stabilizer, ...)
-
-        DEMOS
-          DEMO LIST           List available demos
-          DEMO BELL           Bell state
-          DEMO GHZ            GHZ entanglement
-          DEMO TELEPORT       Quantum teleportation
-          DEMO GROVER         Grover's search
-          DEMO QFT            Quantum Fourier transform
-          DEMO DEUTSCH        Deutsch-Jozsa algorithm
-          DEMO BERNSTEIN      Bernstein-Vazirani
-          DEMO SUPERDENSE     Superdense coding
-          DEMO RANDOM         Quantum random number generator
-          DEMO STRESS         20-qubit stress test
-          DEMO LOCC-TELEPORT  Teleportation across A/B boundary (JOINT)
-          DEMO LOCC-COORD     Classical coordination (SPLIT)
-
-        LOCC MODE (dual-register distributed quantum simulation)
-          LOCC <n_a> <n_b>          SPLIT mode: two independent registers
-          LOCC JOINT <n_a> <n_b>    JOINT mode: shared entanglement possible
-          LOCC OFF                  Back to normal Aer mode
-          LOCC STATUS               Show register info
-          @A H 0                    Gate on register A
-          @B CX 0,1                 Gate on register B
-          SEND A 0 -> x             Mid-circuit measure A[0], store in x
-          IF x THEN @B X 0          Conditional gate based on classical bit
-          SHARE A 2, B 0            Create Bell pair (JOINT mode only)
-          STATE A / STATE B         Inspect register states
-          BLOCH A 0 / BLOCH B 0     Bloch spheres per register
-
-          SPLIT: max capacity (31+31), no cross-register entanglement
-          JOINT: shared entanglement, limited to ~32 total qubits
-          LOCCINFO                  Protocol metrics after run
-
-        BASIS MEASUREMENT
-          MEASURE_X qubit         Measure in X basis (H before measure)
-          MEASURE_Y qubit         Measure in Y basis (SDG+H before measure)
-          MEASURE_Z qubit         Measure in Z basis (standard)
-          Results stored in mx_<q>, my_<q>, mz_<q> variables.
-
-        ERROR CORRECTION
-          SYNDROME ZZ 0 1 -> s0   Measure Pauli stabilizer non-destructively
-          Uses an ancilla (highest qubit index). Pauli string
-          length must match qubit count. I/X/Y/Z supported.
-
-        ADVANCED
-          UNITARY NAME = [[..]]   Define gate from unitary matrix
-          CTRL gate ctrl, tgt     Controlled version of any gate
-          INV gate qubit          Inverse/dagger of a gate
-          RESET qubit             Reset qubit to |0>
-          SWEEP var s e [n]       Run circuit sweeping a variable
-          NOISE type [p]          Set noise model (depolarizing, etc.)
-          NOISE OFF               Disable noise
-          EXPECT Z 0              Expectation value of Pauli operator
-          DENSITY                 Show density matrix
-          ENTROPY [qubits]        Entanglement entropy
-          DECOMPOSE               Gate count breakdown
-          EXPORT [file]           Export circuit as OpenQASM
-          CSV [file]              Export results as CSV
-          RAM                     Memory budget and parallelism estimates
-          BENCH                   Benchmark qubit scaling
-          INCLUDE file            Merge another .qb file
-          DIR [path]              List .qb files
-          CLEAR var               Remove a variable or array
-          UNDO                    Undo last program edit
-
-        FLOW CONTROL (in programs)
-          GOTO line               Jump to line
-          GOSUB line / RETURN     Subroutine call with stack
-          WHILE expr / WEND       Conditional loop
-          IF expr THEN ... ELSE   Conditional (supports expressions)
-          END                     Stop execution
-          PRINT expr              Output during run
-          INPUT "prompt", var     Read user input
-          DIM arr(size)           Declare array
-          LET arr[i] = val        Array assignment
-
-        EXPRESSIONS
-          PI, TAU, E, SQRT2, sin(), cos(), sqrt(), log(), etc.
-          Comparisons: ==, !=, <, >, <=, >=, AND, OR, NOT
-          Arrays: arr(i) or arr[i]
-          Example: LET theta = PI/4 + asin(0.5)
-        """))
+        self.io.writeln(HELP_TEXT)
         # Auto-generated command reference from registry
         all_cmds = sorted(set(self._CMD_NO_ARG.keys()) | set(self._CMD_WITH_ARG.keys()))
         all_gates = sorted(g for g in GATE_TABLE if g not in GATE_ALIASES)
@@ -1881,18 +1638,7 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
                 gpu_str = f" | GPU: {r.stdout.strip().split(chr(10))[0]}"
         except Exception:
             gpu_str = ""
-        self.io.writeln(textwrap.dedent(f"""\
-
-        ██████╗ ██████╗  █████╗ ███████╗██╗ ██████╗
-        ██╔═══██╗██╔══██╗██╔══██╗██╔════╝██║██╔════╝
-        ██║   ██║██████╔╝███████║███████╗██║██║
-        ██║▄▄ ██║██╔══██╗██╔══██║╚════██║██║██║
-        ╚██████╔╝██████╔╝██║  ██║███████║██║╚██████╗
-         ╚══▀▀═╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝╚═╝ ╚═════╝
-
-        Quantum BASIC
-        Python {platform.python_version()} | Qiskit {qver} | {ram_str}{gpu_str}
-        {self.num_qubits} qubits | {self.shots} shots | max ~{max_q} qubits
-        Type HELP for commands, DEMO LIST for demos.
-        """))
+        info_line = f"Python {platform.python_version()} | Qiskit {qver} | {ram_str}{gpu_str}"
+        config_line = f"{self.num_qubits} qubits | {self.shots} shots | max ~{max_q} qubits"
+        self.io.writeln(BANNER_ART.format(info_line=info_line, config_line=config_line))
 

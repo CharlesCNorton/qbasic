@@ -51,11 +51,9 @@ class ScreenMixin:
                     self._print_bloch_single(self.last_sv, q)
                     self.io.writeln('')
         elif mode == 4:
-            if hasattr(self, 'cmd_density'):
-                self.cmd_density()
+            self.cmd_density()
         elif mode == 5:
-            if hasattr(self, 'cmd_circuit'):
-                self.cmd_circuit()
+            self.cmd_circuit()
 
     def cmd_color(self, rest: str) -> None:
         """COLOR foreground[, background] — set terminal colors."""
