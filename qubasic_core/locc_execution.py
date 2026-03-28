@@ -1,6 +1,7 @@
 """QUBASIC LOCC execution mixin — program execution in LOCC mode."""
 
 import re
+import sys
 import time
 
 import numpy as np
@@ -131,9 +132,12 @@ class LOCCExecutionMixin:
                 counts_joint[jkey] = counts_joint.get(jkey, 0) + 1
             if shots > 50 and (shot + 1) % progress_interval == 0:
                 pct = 100 * (shot + 1) // shots
-                self.io.write(f"  {pct}% ({shot+1}/{shots} shots)...\r")
+                _prog = f"  {pct}% ({shot+1}/{shots} shots)..."
+                if hasattr(self.io, 'write') and sys.stdout.isatty():
+                    self.io.write(_prog + '\r')
+                # Non-terminal: skip progress to avoid \r noise
 
-        if shots > 50:
+        if shots > 50 and sys.stdout.isatty():
             self.io.write(" " * 40 + '\r')
         dt = time.time() - t0
         self.io.writeln(f"\nRAN {len(self.program)} lines, LOCC {mode} "

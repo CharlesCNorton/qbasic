@@ -140,22 +140,33 @@ class MemoryMixin:
     def _poke(self, addr: float, value: float) -> None:
         a, v = int(addr), float(value)
         if 0x0000 <= a <= 0x003F:
+            if not isinstance(value, (int, float)):
+                self.io.writeln(f"?TYPE: zero page expects numeric value, got {type(value).__name__}")
+                return
+            if abs(v) > 1e15:
+                self.io.writeln(f"?WARNING: suspiciously large zero-page value: {v}")
             self._zero_page[a] = v
             return
-        writers = {
-            0xD000: lambda: setattr(self, 'num_qubits', max(1, min(32, int(v)))),
-            0xD001: lambda: setattr(self, 'shots', max(1, int(v))),
-            0xD002: lambda: setattr(self, 'sim_method', SIM_METHODS_FWD.get(int(v), 'automatic')),
-            0xD003: lambda: setattr(self, 'sim_device', SIM_DEVICES_FWD.get(int(v), 'CPU')),
-            0xD006: lambda: setattr(self, '_max_iterations', max(1, int(v))),
-            0xD007: lambda: setattr(self, '_screen_mode', int(v)),
-            0xD008: lambda: setattr(self, '_fusion_enable', bool(int(v))),
-            0xD009: lambda: setattr(self, '_mps_truncation', v),
-            0xD00A: lambda: setattr(self, '_sv_parallel_threshold', int(v)),
-            0xD00B: lambda: setattr(self, '_es_approx_error', v),
-        }
-        if a in writers:
-            writers[a]()
+        if a == 0xD000:
+            self.num_qubits = max(1, min(32, int(v)))
+        elif a == 0xD001:
+            self.shots = max(1, int(v))
+        elif a == 0xD002:
+            self.sim_method = SIM_METHODS_FWD.get(int(v), 'automatic')
+        elif a == 0xD003:
+            self.sim_device = SIM_DEVICES_FWD.get(int(v), 'CPU')
+        elif a == 0xD006:
+            self._max_iterations = max(1, int(v))
+        elif a == 0xD007:
+            self._screen_mode = int(v)
+        elif a == 0xD008:
+            self._fusion_enable = bool(int(v))
+        elif a == 0xD009:
+            self._mps_truncation = v
+        elif a == 0xD00A:
+            self._sv_parallel_threshold = int(v)
+        elif a == 0xD00B:
+            self._es_approx_error = v
         elif 0xD100 <= a <= 0xD1FF:
             qubit = (a - 0xD100) // 2
             field = (a - 0xD100) % 2
@@ -282,11 +293,15 @@ class MemoryMixin:
         target = int(self.eval_expr(parts[2])) if len(parts) > 2 else mask
         timeout = float(self.eval_expr(parts[3])) if len(parts) > 3 else 30.0
         t0 = time.time()
-        while time.time() - t0 < timeout:
-            val = int(self._peek(addr))
-            if (val & mask) == target:
-                return
-            time.sleep(0.05)
+        try:
+            while time.time() - t0 < timeout:
+                val = int(self._peek(addr))
+                if (val & mask) == target:
+                    return
+                time.sleep(0.05)
+        except KeyboardInterrupt:
+            self.io.writeln("?WAIT INTERRUPTED")
+            return
         self.io.writeln("?WAIT TIMEOUT")
 
     def cmd_catalog(self) -> None:

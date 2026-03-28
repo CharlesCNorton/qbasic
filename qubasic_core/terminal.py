@@ -74,13 +74,19 @@ def _resolve_named_state(name: str, n_qubits: int) -> np.ndarray:
     if name == '|0>':
         sv[0] = 1.0
     elif name == '|1>':
-        sv[min(1, dim - 1)] = 1.0
+        if dim < 2:
+            raise ValueError(f"State |1> requires at least 1 qubit (dim >= 2), got dim={dim}")
+        sv[1] = 1.0
     elif name == '|+>':
+        if dim < 2:
+            raise ValueError(f"State |+> requires at least 1 qubit (dim >= 2), got dim={dim}")
         sv[0] = 1.0 / np.sqrt(2)
-        sv[min(1, dim - 1)] = 1.0 / np.sqrt(2)
+        sv[1] = 1.0 / np.sqrt(2)
     elif name == '|->':
+        if dim < 2:
+            raise ValueError(f"State |-> requires at least 1 qubit (dim >= 2), got dim={dim}")
         sv[0] = 1.0 / np.sqrt(2)
-        sv[min(1, dim - 1)] = -1.0 / np.sqrt(2)
+        sv[1] = -1.0 / np.sqrt(2)
     elif name == '|BELL>':
         sv[0] = 1.0 / np.sqrt(2)
         sv[dim - 1] = 1.0 / np.sqrt(2)
@@ -344,9 +350,8 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
         'BANK': 'cmd_bank', 'CHAIN': 'cmd_chain', 'MERGE': 'cmd_merge',
         # File handles
         'OPEN': 'cmd_open', 'CLOSE': 'cmd_close',
-        # Module, types, network, primitives
+        # Module, types, primitives
         'IMPORT': 'cmd_import', 'TYPE': 'cmd_type',
-        'CONNECT': 'cmd_connect', 'DISCONNECT': 'cmd_disconnect',
         'SAMPLE': 'cmd_sample', 'ESTIMATE': 'cmd_estimate', 'BENCH': 'cmd_bench',
         'SET_STATE': 'cmd_set_state',
         # Circuit macros
@@ -354,7 +359,12 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
     }
 
     def dispatch(self, line: str) -> None:
-        """Parse and execute an immediate command or gate."""
+        """Parse and execute an immediate command or gate.
+
+        Splits the line on whitespace to extract the command keyword,
+        then looks up in _CMD_WITH_ARG / _CMD_NO_ARG tables. Unmatched
+        lines fall through to run_immediate (gate / subroutine).
+        """
         parts = line.split(None, 1)
         if not parts:
             return
@@ -383,6 +393,7 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
                 self.io.writeln(f"?SYNTAX ERROR: {e}")
 
     def _quit(self) -> None:
+        """Exit the REPL by raising EOFError."""
         raise EOFError
 
     # ── Commands ──────────────────────────────────────────────────────
@@ -546,6 +557,9 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
                 flags=re.IGNORECASE)
 
             new_prog[line_map[old]] = stmt
+        # Note: ELSEIF chains are parsed into nested IF/ELSE at parse time,
+        # not stored as line references, so they survive RENUM without needing
+        # target remapping.
         self.program = new_prog
         self._parsed = {num: parse_stmt(s) for num, s in new_prog.items()}
         self.io.writeln(f"RENUMBERED {len(new_prog)} LINES (start={start}, step={step})")
@@ -752,7 +766,11 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
                 self.variables['ERL'] = self._err_line
                 # Execute the error handler lines directly via PRINT/LET/etc
                 handler_lines = sorted(ln for ln in self.program if ln >= self._error_target)
-                for ln in handler_lines:
+                _handler_limit = min(len(handler_lines), 200)
+                for _hi, ln in enumerate(handler_lines):
+                    if _hi >= _handler_limit:
+                        self.io.writeln("?ERROR HANDLER LIMIT (200 lines)")
+                        break
                     stmt = self.program[ln].strip().upper()
                     if stmt == 'END' or stmt.startswith('RESUME'):
                         break
@@ -799,7 +817,7 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
                         if isinstance(val, np.ndarray):
                             self.arrays[var] = [complex(v) for v in val]
                         self.variables[var] = val
-            except Exception:
+            except (RuntimeError, ValueError, TypeError, KeyError) as _sv_err:
                 self.last_sv = None
             self.last_counts = None
             dt = time.time() - t0
@@ -807,6 +825,10 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
             n_gates = qc.size()
             self._update_status(gate_count=n_gates, circuit_depth=depth,
                                run_time_ms=dt * 1000)
+            # Expose circuit metrics as variables for programmatic access
+            self.variables['_DEPTH'] = depth
+            self.variables['_GATES'] = n_gates
+            self.variables['_TIME'] = dt
             self.io.writeln(f"\nRAN {len(self.program)} lines, {self.num_qubits} qubits "
                             f"in {dt:.2f}s  [depth={depth}, gates={n_gates}]")
             self.io.writeln("(no MEASURE — use STATE, PROBS, or BLOCH to inspect)")
@@ -855,10 +877,13 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
                 backend_opts['statevector_parallel_threshold'] = self._sv_parallel_threshold
             if hasattr(self, '_es_approx_error'):
                 backend_opts['extended_stabilizer_approximation_error'] = self._es_approx_error
+            # Content-based noise key: use str repr instead of id() so
+            # equivalent noise models share the cache.
+            _noise_key = str(self._noise_model) if self._noise_model else None
             cache_key = (
                 tuple(sorted(self.program.items())),
                 self.num_qubits, method, self.sim_device,
-                id(self._noise_model),
+                _noise_key,
                 getattr(self, '_fusion_enable', None),
                 getattr(self, '_mps_truncation', None),
                 getattr(self, '_sv_parallel_threshold', None),
@@ -888,6 +913,12 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
                     backend = AerSimulator(**sv_opts)
                     qc_t = transpile(qc, backend)
                     result = backend.run(qc_t, shots=self.shots).result()
+                    # Validate fallback produced usable counts
+                    if has_measure:
+                        _fb_counts = result.get_counts()
+                        if not _fb_counts:
+                            self.io.writeln("?FALLBACK PRODUCED NO RESULTS")
+                            return
                 else:
                     raise
             # Extract results based on method
@@ -959,6 +990,10 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
         n_gates = qc.size()
         self._update_status(gate_count=n_gates, circuit_depth=depth,
                            run_time_ms=dt * 1000)
+        # Expose circuit metrics as variables for programmatic access
+        self.variables['_DEPTH'] = depth
+        self.variables['_GATES'] = n_gates
+        self.variables['_TIME'] = dt
 
         # Display results
         self.io.writeln(f"\nRAN {len(self.program)} lines, {self.num_qubits} qubits, "
@@ -1240,6 +1275,27 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
             self._array_dims[name] = dims
         return True
 
+    def _try_exec_dim_type(self, stmt: str) -> bool:
+        """Handle DIM name AS TypeName — instantiate a user-defined type."""
+        from qubasic_core.engine import RE_DIM_TYPE
+        m = RE_DIM_TYPE.match(stmt)
+        if not m:
+            return False
+        var_name = m.group(1)
+        type_name = m.group(2).upper()
+        if type_name not in self._user_types:
+            self.io.writeln(f"?UNDEFINED TYPE: {type_name}")
+            return True
+        fields = self._user_types[type_name]
+        # Create a dict-backed record with typed default values
+        defaults = {'INTEGER': 0, 'FLOAT': 0.0, 'STRING': '', 'QUBIT': 0}
+        record = {fname: defaults.get(ftype, 0) for fname, ftype in fields}
+        self.variables[var_name] = record
+        # Also register dotted accessors as variables
+        for fname, _ in fields:
+            self.variables[f'{var_name}.{fname}'] = record[fname]
+        return True
+
     def _try_exec_redim(self, stmt: str) -> bool:
         """Handle REDIM name(size) — resize an existing array."""
         m = RE_REDIM.match(stmt)
@@ -1419,6 +1475,7 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
             or self._try_exec_syndrome(stmt, qc, run_vars, backend=backend)
             or self._try_exec_unitary(stmt)
             or self._try_exec_dim(stmt)
+            or self._try_exec_dim_type(stmt)
             or self._try_exec_redim(stmt)
             or self._try_exec_erase(stmt)
             or self._try_exec_get(stmt, run_vars)

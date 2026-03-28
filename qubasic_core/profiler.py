@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import math
 import time
+from typing import Any
 
 MAX_STATS_RUNS = 10000
-import math
-from typing import Any
 
 
 class _NullIOPort:
@@ -87,7 +87,7 @@ class ProfilerMixin:
     # ── Statistics accumulator ─────────────────────────────────────────
 
     def cmd_stats(self, rest: str = '') -> None:
-        """STATS [N|SHOW|CLEAR] — multi-run statistics accumulator."""
+        """STATS [N|SHOW|CLEAR|CSV <file>] — multi-run statistics accumulator."""
         arg = rest.strip().upper()
         if arg == 'CLEAR':
             self._stats_runs.clear()
@@ -96,11 +96,14 @@ class ProfilerMixin:
         if arg == 'SHOW' or not arg:
             self._show_stats()
             return
+        if arg.startswith('CSV'):
+            self._stats_export_csv(rest[3:].strip())
+            return
         # STATS N — run N trials
         try:
             n = int(arg)
         except ValueError:
-            self.io.writeln("?USAGE: STATS [N|SHOW|CLEAR]")
+            self.io.writeln("?USAGE: STATS [N|SHOW|CLEAR|CSV <file>]")
             return
         if n < 1:
             self.io.writeln("?STATS needs at least 1 run")
@@ -141,7 +144,8 @@ class ProfilerMixin:
             for state in state_totals:
                 if state not in run:
                     state_totals[state].append(0)
-        # Pad lists to same length
+        # Pad lists to same length.  This is O(states * n) but n is bounded
+        # by MAX_STATS_RUNS (enforced during collection), so it stays tractable.
         for state in state_totals:
             while len(state_totals[state]) < n:
                 state_totals[state].append(0)
@@ -158,3 +162,43 @@ class ProfilerMixin:
             prob = mean / avg_shots if avg_shots > 0 else 0
             self.io.writeln(f"  |{state}\u27E9  {mean:>8.1f}  {std:>8.2f}  {min(vals):>6}  {max(vals):>6}  {prob:>7.4f}")
         self.io.writeln('')
+
+    def _stats_export_csv(self, path: str) -> None:
+        """Export accumulated stats to CSV."""
+        if not self._stats_runs:
+            self.io.writeln("  No statistics collected")
+            return
+        if not path:
+            self.io.writeln("?USAGE: STATS CSV <filename>")
+            return
+        try:
+            path = self._sanitize_path(path)
+        except (ValueError, AttributeError) as e:
+            self.io.writeln(f"?STATS CSV ERROR: {e}")
+            return
+        n = len(self._stats_runs)
+        state_totals: dict[str, list[int]] = {}
+        for run in self._stats_runs:
+            for state, count in run.items():
+                if state not in state_totals:
+                    state_totals[state] = []
+                state_totals[state].append(count)
+            for state in state_totals:
+                if state not in run:
+                    state_totals[state].append(0)
+        for state in state_totals:
+            while len(state_totals[state]) < n:
+                state_totals[state].append(0)
+        shot_totals = [sum(run.values()) for run in self._stats_runs]
+        avg_shots = sum(shot_totals) / len(shot_totals) if shot_totals else 1
+        lines = ['state,mean,stddev,min,max,probability']
+        for state in sorted(state_totals.keys()):
+            vals = state_totals[state]
+            mean = sum(vals) / len(vals)
+            variance = sum((v - mean) ** 2 for v in vals) / len(vals)
+            std = math.sqrt(variance)
+            prob = mean / avg_shots if avg_shots > 0 else 0
+            lines.append(f"{state},{mean:.2f},{std:.4f},{min(vals)},{max(vals)},{prob:.6f}")
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines) + '\n')
+        self.io.writeln(f"STATS EXPORTED to {path} ({n} runs, {len(state_totals)} states)")

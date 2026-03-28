@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+from pathlib import Path
 
 import numpy as np
 
@@ -190,6 +191,7 @@ class FileIOMixin:
         mod_name = os.path.splitext(os.path.basename(path))[0].upper()
         # Parse the file for DEF statements
         import_count = 0
+        _import_line_counter = 50000
         with open(path, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.rstrip('\n\r').strip()
@@ -209,15 +211,21 @@ class FileIOMixin:
                         import_count += 1
                 # Also import SUB/FUNCTION definitions as numbered lines
                 elif upper.startswith('SUB ') or upper.startswith('FUNCTION '):
-                    # Store the line for later _scan_subs to pick up
-                    # Use high line numbers to avoid conflicts
-                    max_ln = max(self.program.keys()) if self.program else 0
-                    base = max(max_ln + 1000, 90000)
-                    self.process(f"{base + import_count * 10} {line}", track_undo=False)
+                    # Store the line for later _scan_subs to pick up.
+                    # Use a dedicated counter starting at 50000, incrementing
+                    # by 10, with collision avoidance against existing lines.
+                    ln = _import_line_counter
+                    while ln in self.program:
+                        ln += 10
+                    _import_line_counter = ln + 10
+                    self.process(f"{ln} {line}", track_undo=False)
                     import_count += 1
                 elif upper in ('END SUB', 'END FUNCTION') and import_count > 0:
-                    max_ln = max(self.program.keys()) if self.program else 0
-                    self.process(f"{max_ln + 10} {line}", track_undo=False)
+                    ln = _import_line_counter
+                    while ln in self.program:
+                        ln += 10
+                    _import_line_counter = ln + 10
+                    self.process(f"{ln} {line}", track_undo=False)
                     import_count += 1
         self.io.writeln(f"IMPORTED {mod_name} ({import_count} definitions from {path})")
 
@@ -332,7 +340,6 @@ class FileIOMixin:
         """
         if not self.agent_mode:
             return path
-        from pathlib import Path
         resolved = Path(os.path.realpath(os.path.join(os.getcwd(), path)))
         cwd_real = Path(os.path.realpath(os.getcwd()))
         if not resolved.is_relative_to(cwd_real):
@@ -364,12 +371,14 @@ class FileIOMixin:
                 bin_mode = mode + 'b'
                 if mode_str == 'RANDOM' and not os.path.isfile(path):
                     open(path, 'wb').close()
+                    self.io.writeln(f"  (created new file {path})")
                 if mode_str == 'RANDOM' and os.path.isfile(path):
                     self.io.writeln(f"  (opening existing file {path} for random access)")
                 self._file_handles[handle] = open(path, bin_mode)
             else:
                 if mode_str == 'RANDOM' and not os.path.isfile(path):
                     open(path, 'w', encoding=encoding).close()
+                    self.io.writeln(f"  (created new file {path})")
                 if mode_str == 'RANDOM' and os.path.isfile(path):
                     self.io.writeln(f"  (opening existing file {path} for random access)")
                 self._file_handles[handle] = open(path, mode, encoding=encoding)
@@ -468,7 +477,7 @@ class FileIOMixin:
             with open(self._lprint_path, 'a', encoding='utf-8') as f:
                 f.write(text + '\n')
         else:
-            print(text, file=sys.stderr)
+            self.io.writeln(text)
         return True
 
     def _eof(self, handle: float) -> float:

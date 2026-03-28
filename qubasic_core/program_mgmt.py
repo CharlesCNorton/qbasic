@@ -273,12 +273,15 @@ class ProgramMgmtMixin:
             self.io.writeln(f"?FILE NOT FOUND: {path}")
             return
         saved_vars = dict(self.variables)
+        saved_arrays = {k: list(v) if isinstance(v, list) else v
+                        for k, v in self.arrays.items()}
         self.program.clear()
         with open(path, 'r', encoding='utf-8') as f:
             lines = [l.rstrip('\n\r') for l in f.readlines()]
         self._load_lines_with_defs(
             lines, lambda line: self.process(line, track_undo=False))
         self.variables.update(saved_vars)
+        self.arrays.update(saved_arrays)
         self.io.writeln(f"CHAINED {path}")
         if self.program:
             self.cmd_run()
@@ -302,8 +305,20 @@ class ProgramMgmtMixin:
             return
         with open(path, 'r', encoding='utf-8') as f:
             lines = [l.rstrip('\n\r') for l in f.readlines()]
+        existing_before = set(self.program.keys())
         count = self._load_lines_with_defs(
             lines, lambda line: self.process(line, track_undo=False))
+        # Detect lines that existed before the merge and were overwritten by
+        # the loaded file.  Re-parse the raw file for numbered lines and
+        # intersect with the set of line numbers that existed beforehand.
+        merged_nums: set[int] = set()
+        for raw in lines:
+            m = re.match(r'^\s*(\d+)\s', raw)
+            if m:
+                merged_nums.add(int(m.group(1)))
+        n_overwritten = len(existing_before & merged_nums)
+        if n_overwritten:
+            self.io.writeln(f"  WARNING: {n_overwritten} line(s) overwritten by merge")
         self.io.writeln(f"MERGED {path} ({count} lines)")
 
     # ── Introspection ─────────────────────────────────────────────────

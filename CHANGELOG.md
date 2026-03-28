@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0 (2026-03-28)
+
+- FUNCTION return value fix, APPLY_CIRCUIT in programs, stabilizer fallback
+- Bump to 0.3.0
+
+## 0.2.0 (2026-03-28)
+
+- Rename qbasic -> qubasic everywhere (PyPI name conflict)
+
 ## 0.1.0 (2026-03-28)
 
 Initial PyPI release.

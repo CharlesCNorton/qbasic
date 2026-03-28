@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-MAX_SV_CHECKPOINTS = 1000
+MAX_SV_CHECKPOINTS = 200
 from typing import Any
 
 from qubasic_core.engine import (
@@ -131,8 +131,14 @@ class DebugMixin:
     # ── Time-travel debugging ─────────────────────────────────────────
 
     def _checkpoint_sv(self, line_num: int) -> None:
-        """Save a statevector checkpoint (for small qubit counts)."""
-        if self.last_sv is not None and self.num_qubits <= 16:
+        """Save a statevector checkpoint (for small qubit counts).
+
+        Only checkpoints systems with <= 12 qubits to keep memory reasonable.
+        12 qubits = 2^12 complex128 = ~64KB per checkpoint.
+        At MAX_SV_CHECKPOINTS=200 that is ~12MB total, versus ~1GB for 16-qubit
+        systems at the old limit.
+        """
+        if self.last_sv is not None and self.num_qubits <= 12:
             import numpy as np
             self._sv_checkpoints.append((line_num, np.array(self.last_sv).copy()))
             if len(self._sv_checkpoints) > MAX_SV_CHECKPOINTS:
@@ -225,7 +231,7 @@ class DebugMixin:
     # ── Breakpoints ────────────────────────────────────────────────────
 
     def cmd_breakpoint(self, rest: str) -> None:
-        """BREAK <line> — set/clear/list breakpoints."""
+        """BREAK <line> | BREAK CLEAR | BREAK LIST | BREAK <start>-<end> — manage breakpoints."""
         if not rest.strip():
             if self._breakpoints:
                 self.io.writeln(f"  Breakpoints: {sorted(self._breakpoints)}")
@@ -233,10 +239,29 @@ class DebugMixin:
                 self.io.writeln("  No breakpoints set")
             return
         rest = rest.strip().upper()
-        if rest == 'CLEAR':
+        if rest in ('CLEAR', 'ALL'):
             self._breakpoints.clear()
             self.io.writeln("BREAKPOINTS CLEARED")
             return
+        if rest == 'LIST':
+            if self._breakpoints:
+                for bp in sorted(self._breakpoints):
+                    src = self.program.get(bp, '(no source)')
+                    self.io.writeln(f"  {bp}: {src}")
+            else:
+                self.io.writeln("  No breakpoints set")
+            return
+        # Range: BREAK 10-50
+        if '-' in rest:
+            try:
+                a, b = rest.split('-')
+                for bp in list(self._breakpoints):
+                    if int(a) <= bp <= int(b):
+                        self._breakpoints.discard(bp)
+                self.io.writeln(f"BREAKPOINTS CLEARED IN {a}-{b}")
+                return
+            except ValueError:
+                pass
         try:
             line = int(rest)
             if line in self._breakpoints:
@@ -246,7 +271,7 @@ class DebugMixin:
                 self._breakpoints.add(line)
                 self.io.writeln(f"BREAKPOINT SET: {line}")
         except ValueError:
-            self.io.writeln("?USAGE: BREAK <line> | BREAK CLEAR")
+            self.io.writeln("?USAGE: BREAK <line> | BREAK <start>-<end> | BREAK CLEAR | BREAK LIST")
 
     def _check_breakpoint(self, line_num: int, sorted_lines: list[int], ip: int) -> bool:
         """Check if we should break at this line. Returns True to stop."""

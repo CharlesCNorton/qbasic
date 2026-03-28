@@ -26,6 +26,7 @@ class SubroutineMixin:
         self._scope_stack: list[dict[str, Any]] = []
         self._static_vars: dict[str, dict[str, Any]] = {'_GLOBAL': {}}
         self._call_stack: list[dict[str, Any]] = []
+        self._func_call_depth: int = 0
 
     def _scan_subs(self, sorted_lines: list[int]) -> None:
         """Scan program for SUB and FUNCTION blocks before execution."""
@@ -141,60 +142,67 @@ class SubroutineMixin:
         """Execute a FUNCTION block and return its value.
         Called from the expression evaluator.
         Uses _exec_control_flow for full statement support inside function bodies."""
-        uname = name.upper()
-        if uname not in self._func_defs:
-            raise ValueError(f"UNDEFINED FUNCTION: {name}")
-        func = self._func_defs[uname]
-        self._push_scope()
-        for i, pname in enumerate(func['params']):
-            self.variables[pname] = args[i] if i < len(args) else 0
-        self.variables[uname] = 0  # return variable
-        if uname in self._static_vars:
-            for k, v in self._static_vars[uname].items():
-                self.variables[k] = v
-        ctx = ExecContext(
-            sorted_lines=sorted_lines,
-            ip=func['start_ip'],
-            run_vars=dict(self.variables),
-            loop_stack=[],
-            max_iterations=self._max_iterations,
-        )
-        while ctx.ip <= func['end_ip']:
-            ctx.iteration_count += 1
-            if ctx.iteration_count > ctx.max_iterations:
-                raise RuntimeError("FUNCTION LOOP LIMIT")
-            stmt = self.program[sorted_lines[ctx.ip]].strip()
-            if RE_END_FUNCTION.match(stmt):
-                break
-            # Pre-parse once, pass to both the main call and the recurse callback
-            from qubasic_core.parser import parse_stmt
-            stmt_parsed = parse_stmt(stmt)
-            # Use full control-flow dispatch for all statement types
-            def _fn_recurse(s, ls, sl, i, rv):
-                handled, result = self._exec_control_flow(s, ls, sl, i, rv, _fn_recurse)
-                if handled:
-                    return result
-                return None
-            handled, result = self._exec_control_flow(
-                stmt, ctx.loop_stack, sorted_lines, ctx.ip, ctx.run_vars, _fn_recurse,
-                parsed=stmt_parsed)
-            if handled:
-                if isinstance(result, int):
-                    ctx.ip = result
-                    continue
-                elif result is ExecResult.END:
+        self._func_call_depth += 1
+        if self._func_call_depth > 100:
+            self._func_call_depth -= 1
+            raise RuntimeError("FUNCTION CALL DEPTH LIMIT (100)")
+        try:
+            uname = name.upper()
+            if uname not in self._func_defs:
+                raise ValueError(f"UNDEFINED FUNCTION: {name}")
+            func = self._func_defs[uname]
+            self._push_scope()
+            for i, pname in enumerate(func['params']):
+                self.variables[pname] = args[i] if i < len(args) else 0
+            self.variables[uname] = 0  # return variable
+            if uname in self._static_vars:
+                for k, v in self._static_vars[uname].items():
+                    self.variables[k] = v
+            ctx = ExecContext(
+                sorted_lines=sorted_lines,
+                ip=func['start_ip'],
+                run_vars=dict(self.variables),
+                loop_stack=[],
+                max_iterations=self._max_iterations,
+            )
+            while ctx.ip <= func['end_ip']:
+                ctx.iteration_count += 1
+                if ctx.iteration_count > ctx.max_iterations:
+                    raise RuntimeError("FUNCTION LOOP LIMIT")
+                stmt = self.program[sorted_lines[ctx.ip]].strip()
+                if RE_END_FUNCTION.match(stmt):
                     break
-            ctx.ip += 1
-        # LET writes lowercase; check both, preferring the non-zero value
-        candidates = [
-            self.variables.get(uname.lower()),
-            ctx.run_vars.get(uname.lower()),
-            self.variables.get(uname),
-            ctx.run_vars.get(uname),
-        ]
-        ret_val = next((v for v in candidates if v is not None and v != 0), 0)
-        self._pop_scope()
-        return ret_val
+                # Pre-parse once, pass to both the main call and the recurse callback
+                from qubasic_core.parser import parse_stmt
+                stmt_parsed = parse_stmt(stmt)
+                # Use full control-flow dispatch for all statement types
+                def _fn_recurse(s, ls, sl, i, rv):
+                    handled, result = self._exec_control_flow(s, ls, sl, i, rv, _fn_recurse)
+                    if handled:
+                        return result
+                    return None
+                handled, result = self._exec_control_flow(
+                    stmt, ctx.loop_stack, sorted_lines, ctx.ip, ctx.run_vars, _fn_recurse,
+                    parsed=stmt_parsed)
+                if handled:
+                    if isinstance(result, int):
+                        ctx.ip = result
+                        continue
+                    elif result is ExecResult.END:
+                        break
+                ctx.ip += 1
+            # LET writes lowercase; check both, preferring the non-zero value
+            candidates = [
+                self.variables.get(uname.lower()),
+                ctx.run_vars.get(uname.lower()),
+                self.variables.get(uname),
+                ctx.run_vars.get(uname),
+            ]
+            ret_val = next((v for v in candidates if v is not None and v != 0), 0)
+            self._pop_scope()
+            return ret_val
+        finally:
+            self._func_call_depth -= 1
 
     # ── LOCAL / STATIC / SHARED ────────────────────────────────────────
 
@@ -242,7 +250,14 @@ class SubroutineMixin:
             var_list = m.group(1)
         for vname in var_list.split(','):
             vname = vname.strip()
-            if vname and self._scope_stack and vname in self._scope_stack[-1]:
+            if not vname or not self._scope_stack:
+                continue
+            # Inside a function call, only allow sharing variables that
+            # existed in the caller's scope before the call was made.
+            # This prevents functions from creating new SHARED globals.
+            if self._call_stack and vname not in self._scope_stack[-1]:
+                continue
+            if vname in self._scope_stack[-1]:
                 run_vars[vname] = self._scope_stack[-1].get(vname, 0)
                 self.variables[vname] = run_vars[vname]
         return True, ExecResult.ADVANCE

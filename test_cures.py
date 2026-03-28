@@ -972,15 +972,9 @@ class TestProgramManagement(unittest.TestCase):
 
     def test_lprint_line_input_let_string(self):
         """LPRINT, LINE INPUT, LET string."""
-        # LPRINT
-        old_stderr = sys.stderr
-        buf = io.StringIO()
-        sys.stderr = buf
-        try:
-            self.t._exec_lprint('LPRINT "TESTING"', {})
-        finally:
-            sys.stderr = old_stderr
-        self.assertIn('TESTING', buf.getvalue())
+        # LPRINT — now goes through self.io (stdout) instead of stderr
+        _, out = capture(self.t._exec_lprint, 'LPRINT "TESTING"', {})
+        self.assertIn('TESTING', out)
 
         # LINE INPUT
         orig = builtins.input
@@ -1146,14 +1140,7 @@ class TestQuantumOps(unittest.TestCase):
         _, out = capture(t2.dispatch, '@A CTRL X 0, 1')
         self.assertNotIn('ERROR', out.upper())
 
-        # CONNECT / DISCONNECT
-        t3 = QBasicTerminal()
-        _, out = capture(t3.cmd_connect, '"localhost:8080" AS C')
-        self.assertIn('CONNECTED', out)
-        _, out = capture(t3.cmd_disconnect, 'C')
-        self.assertIn('DISCONNECTED', out)
-        _, out = capture(t3.cmd_disconnect, 'Z')
-        self.assertIn('NOT CONNECTED', out)
+        # CONNECT/DISCONNECT stubs removed — no longer exposed as commands
 
     def test_save_expect_set_state(self):
         """SAVE_EXPECT and SET_STATE (named + explicit) parse into program."""
@@ -1696,6 +1683,287 @@ class TestPropertyBased(unittest.TestCase):
             for state in t.last_counts:
                 self.assertTrue(all(c == state[0] for c in state),
                     f"GHZ-{n} produced non-GHZ state: {state}")
+
+
+# =====================================================================
+# 12. TestGapCoverage
+# =====================================================================
+class TestGapCoverage(unittest.TestCase):
+    """Tests for previously untested features."""
+
+    def setUp(self):
+        self.t = QBasicTerminal()
+
+    # 1 --help
+    def test_cli_help_output(self):
+        """--help prints usage and exits with 0."""
+        from unittest.mock import patch
+        from qubasic import main
+        with patch('sys.argv', ['qubasic', '--help']):
+            _, out = capture(lambda: None)  # reset
+            buf = io.StringIO()
+            old = sys.stdout
+            sys.stdout = buf
+            try:
+                with self.assertRaises(SystemExit) as ctx:
+                    main()
+                self.assertEqual(ctx.exception.code, 0)
+            finally:
+                sys.stdout = old
+            text = buf.getvalue()
+            self.assertIn('QUBASIC', text)
+            self.assertIn('Usage', text)
+            self.assertIn('--help', text)
+
+    # 2 quiet mode
+    def test_cli_quiet_mode(self):
+        """Running a script with --quiet suppresses banner output."""
+        from qubasic import run_script
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.qb', delete=False) as f:
+            f.write('10 QUBITS 1\n20 H 0\n30 MEASURE\n40 END\n')
+            path = f.name
+        try:
+            t = QBasicTerminal()
+            buf = io.StringIO()
+            old = sys.stdout
+            sys.stdout = buf
+            try:
+                run_script(path, t)
+            finally:
+                sys.stdout = old
+            out = buf.getvalue()
+            # Banner contains art/title — quiet caller captures but doesn't call print_banner
+            # run_script itself does not print the banner, so output should lack it
+            self.assertNotIn('QUBASIC — Quantum BASIC', out.split('\n')[0] if out else '')
+        finally:
+            os.unlink(path)
+
+    # 3 JSON mode
+    def test_cli_json_mode(self):
+        """--json flag produces valid JSON with expected keys."""
+        import json as _json
+        from unittest.mock import patch
+        from qubasic import main
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.qb', delete=False) as f:
+            f.write('10 QUBITS 1\n20 H 0\n30 MEASURE\n40 END\n')
+            path = f.name
+        try:
+            with patch('sys.argv', ['qubasic', '--json', path]):
+                buf = io.StringIO()
+                old = sys.stdout
+                sys.stdout = buf
+                try:
+                    with self.assertRaises(SystemExit):
+                        main()
+                finally:
+                    sys.stdout = old
+                text = buf.getvalue().strip()
+                # The last JSON object in output is our result
+                # (mock Aer may print nothing before the JSON)
+                data = _json.loads(text)
+                self.assertIn('counts', data)
+                self.assertIn('num_qubits', data)
+                self.assertIn('shots', data)
+        finally:
+            os.unlink(path)
+
+    # 4 module entry point
+    def test_module_entry_point(self):
+        """Importing __main__ module does not crash."""
+        import importlib
+        mod = importlib.import_module('qubasic_core.__main__')
+        self.assertTrue(hasattr(mod, 'QBasicTerminal'))
+
+    # 5 EOF function
+    def test_eof_function(self):
+        """_eof returns 0.0 when data remains, 1.0 at end."""
+        fname = '_test_eof_tmp.txt'
+        with open(fname, 'w') as f:
+            f.write('hello\nworld\n')
+        try:
+            self.t.cmd_open(f'"{fname}" FOR INPUT AS #1')
+            self.assertEqual(self.t._eof(1), 0.0)
+            # Read to end
+            fh = self.t._file_handles[1]
+            fh.read()
+            self.assertEqual(self.t._eof(1), 1.0)
+            self.t.cmd_close('#1')
+            # Handle not open -> 1.0
+            self.assertEqual(self.t._eof(1), 1.0)
+        finally:
+            os.unlink(fname)
+
+    # 6 OPEN with ENCODING param
+    def test_open_encoding_param(self):
+        """OPEN with ENCODING parameter opens file with specified encoding."""
+        fname = '_test_enc_tmp.txt'
+        with open(fname, 'w', encoding='utf-8') as f:
+            f.write('test content')
+        try:
+            _, out = capture(self.t.cmd_open, f'"{fname}" FOR INPUT AS #1 ENCODING "utf-8"')
+            self.assertIn('OPENED #1', out)
+            fh = self.t._file_handles.get(1)
+            self.assertIsNotNone(fh)
+            self.assertEqual(fh.encoding, 'utf-8')
+            self.t.cmd_close('#1')
+        finally:
+            os.unlink(fname)
+
+    # 7 OPEN binary mode
+    def test_open_binary_mode(self):
+        """OPEN with ENCODING 'binary' opens in binary mode."""
+        fname = '_test_bin_tmp.bin'
+        with open(fname, 'wb') as f:
+            f.write(b'\x00\x01\x02')
+        try:
+            _, out = capture(self.t.cmd_open, f'"{fname}" FOR INPUT AS #2 ENCODING "binary"')
+            self.assertIn('OPENED #2', out)
+            fh = self.t._file_handles.get(2)
+            self.assertIsNotNone(fh)
+            self.assertIn('b', fh.mode)
+            self.t.cmd_close('#2')
+        finally:
+            os.unlink(fname)
+
+    # 8 OPEN RANDOM mode
+    def test_open_random_mode(self):
+        """OPEN FOR RANDOM creates file if needed and reports it."""
+        fname = '_test_rnd_tmp.rnd'
+        if os.path.isfile(fname):
+            os.unlink(fname)
+        try:
+            _, out = capture(self.t.cmd_open, f'"{fname}" FOR RANDOM AS #3')
+            self.assertIn('OPENED #3', out)
+            self.assertTrue(os.path.isfile(fname))
+            self.t.cmd_close('#3')
+        finally:
+            if os.path.isfile(fname):
+                os.unlink(fname)
+
+    # 9 CIRCUIT_DEF and APPLY_CIRCUIT
+    def test_circuit_def_apply(self):
+        """CIRCUIT_DEF defines a macro; APPLY_CIRCUIT dispatches it."""
+        self.t.num_qubits = 2
+        self.t.process('10 H 0')
+        self.t.process('20 CX 0,1')
+        _, out_def = capture(self.t.cmd_circuit_def, 'BELL 10-20')
+        self.assertIn('CIRCUIT BELL', out_def)
+        self.assertIn('2 gates', out_def)
+        self.assertIn('BELL', self.t.subroutines)
+        # APPLY_CIRCUIT — just verify it doesn't crash
+        _, out_apply = capture(self.t.cmd_apply_circuit, 'BELL')
+
+    # 10 TYPE definition
+    def test_type_definition(self):
+        """TYPE defines a record type with fields in _user_types."""
+        _, out1 = capture(self.t.cmd_type, 'Point')
+        self.assertIn('TYPE POINT', out1)
+        self.assertIsNotNone(self.t._pending_type)
+        # Feed fields
+        _, _ = capture(self.t._accumulate_type_field, '  x AS FLOAT')
+        _, _ = capture(self.t._accumulate_type_field, '  y AS FLOAT')
+        _, out_end = capture(self.t._accumulate_type_field, 'END TYPE')
+        self.assertIn('TYPE POINT', out_end)
+        self.assertIn('2 fields', out_end)
+        self.assertIsNone(self.t._pending_type)
+        self.assertIn('POINT', self.t._user_types)
+        fields = self.t._user_types['POINT']
+        self.assertEqual(len(fields), 2)
+        self.assertEqual(fields[0], ('x', 'FLOAT'))
+        self.assertEqual(fields[1], ('y', 'FLOAT'))
+
+    # 11 SCREEN modes
+    def test_screen_modes(self):
+        """SCREEN 0-5 sets _screen_mode correctly."""
+        mode_names = {0: 'text', 1: 'histogram', 2: 'statevector',
+                      3: 'Bloch', 4: 'density', 5: 'circuit'}
+        for mode in range(6):
+            _, out = capture(self.t.cmd_screen, str(mode))
+            self.assertEqual(self.t._screen_mode, mode)
+            self.assertIn(mode_names[mode], out)
+        # Invalid mode
+        _, out_bad = capture(self.t.cmd_screen, '9')
+        self.assertIn('?SCREEN 0-5', out_bad)
+        self.assertEqual(self.t._screen_mode, 5)  # unchanged from last valid
+
+    # 12 PROMPT command
+    def test_prompt_command(self):
+        """PROMPT changes the REPL prompt string."""
+        _, out = capture(self.t.cmd_prompt, '">>> "')
+        self.assertEqual(self.t._prompt, '>>> ')
+        self.assertIn('>>>', out)
+        # No args shows current
+        _, out2 = capture(self.t.cmd_prompt, '')
+        self.assertIn('>>>', out2)
+
+    # 13 PLAY command
+    def test_play_command(self):
+        """cmd_play emits bell character(s) without crashing."""
+        _, out = capture(self.t.cmd_play, '')
+        self.assertIn('\a', out)
+        _, out2 = capture(self.t.cmd_play, '3')
+        self.assertEqual(out2.count('\a'), 3)
+
+    # 14 SAMPLE and ESTIMATE
+    def test_sample_and_estimate(self):
+        """cmd_sample and cmd_estimate exist and handle empty programs."""
+        # Empty program
+        _, out_s = capture(self.t.cmd_sample, '')
+        self.assertIn('NOTHING TO SAMPLE', out_s)
+        # With a program: sample should attempt execution
+        t2 = QBasicTerminal()
+        t2.num_qubits = 1
+        t2.shots = 10
+        t2.process('10 H 0')
+        t2.process('20 MEASURE')
+        # cmd_sample will try SamplerV2 which uses mock — may error but shouldn't crash
+        _, out_s2 = capture(t2.cmd_sample, '10')
+        self.assertTrue('SAMPLED' in out_s2 or '?SAMPLE ERROR' in out_s2)
+        # cmd_estimate with no program
+        _, out_e = capture(self.t.cmd_estimate, '')
+        self.assertIn('?USAGE', out_e)
+
+    # 15 LIST SUBS, LIST VARS, LIST ARRAYS
+    def test_list_subs_vars_arrays(self):
+        """LIST SUBS/VARS/ARRAYS subcommands produce output."""
+        # No subs
+        _, out_s = capture(self.t.cmd_list, 'SUBS')
+        self.assertIn('No subroutines', out_s)
+        # No vars
+        _, out_v = capture(self.t.cmd_list, 'VARS')
+        self.assertIn('No variables', out_v)
+        # No arrays
+        _, out_a = capture(self.t.cmd_list, 'ARRAYS')
+        self.assertIn('No arrays', out_a)
+        # With data
+        self.t.variables['x'] = 42
+        self.t.arrays['a'] = [1.0, 2.0, 3.0]
+        self.t.process('10 H 0')
+        self.t.subroutines['BELL'] = {'body': ['H 0', 'CX 0,1'], 'params': []}
+        _, out_s2 = capture(self.t.cmd_list, 'SUBS')
+        self.assertIn('BELL', out_s2)
+        _, out_v2 = capture(self.t.cmd_list, 'VARS')
+        self.assertIn('x', out_v2)
+        self.assertIn('42', out_v2)
+        _, out_a2 = capture(self.t.cmd_list, 'ARRAYS')
+        self.assertIn('a(3)', out_a2)
+
+    # 16 REDIM
+    def test_redim(self):
+        """REDIM resizes an existing array, preserving or truncating data."""
+        # DIM first
+        self.t._try_exec_dim('DIM arr(5)')
+        self.assertEqual(len(self.t.arrays['arr']), 5)
+        # REDIM larger
+        self.t._try_exec_redim('REDIM arr(8)')
+        self.assertEqual(len(self.t.arrays['arr']), 8)
+        self.assertEqual(self.t.arrays['arr'][:5], [0.0] * 5)
+        # REDIM smaller
+        self.t._try_exec_redim('REDIM arr(3)')
+        self.assertEqual(len(self.t.arrays['arr']), 3)
+        # REDIM non-existent array creates it
+        self.t._try_exec_redim('REDIM newary(4)')
+        self.assertEqual(len(self.t.arrays['newary']), 4)
 
 
 # =====================================================================

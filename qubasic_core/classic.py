@@ -409,6 +409,7 @@ class ClassicMixin:
     # ── OPTION BASE ───────────────────────────────────────────────────
 
     def _cf_option_base(self, stmt: str, *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        # Parsed and stored; array indexing always starts at 0 in this implementation.
         if parsed is not None:
             self._option_base = parsed.base
         else:

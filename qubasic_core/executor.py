@@ -160,7 +160,7 @@ class ExecutorMixin:
             GateStmt, RawStmt,
         )
 
-        # 1. Typed fast-path (no regex, no string manipulation)
+        # 1. Typed fast-path: terminals that don't need control-flow dispatch
         if parsed is None:
             from qubasic_core.parser import parse_stmt
             parsed = parse_stmt(stmt)
@@ -176,160 +176,6 @@ class ExecutorMixin:
             if not self._gosub_stack:
                 raise RuntimeError("RETURN WITHOUT GOSUB")
             return self._gosub_stack.pop()
-        if isinstance(parsed, GotoStmt):
-            for idx, ln in enumerate(sorted_lines):
-                if ln == parsed.target:
-                    return idx
-            raise RuntimeError(f"GOTO {parsed.target}: LINE NOT FOUND")
-        if isinstance(parsed, GosubStmt):
-            self._gosub_stack.append(ip + 1)
-            for idx, ln in enumerate(sorted_lines):
-                if ln == parsed.target:
-                    return idx
-            raise RuntimeError(f"GOSUB {parsed.target}: LINE NOT FOUND")
-        if isinstance(parsed, WendStmt):
-            _, r = self._cf_wend(run_vars, loop_stack, sorted_lines, ip)
-            return r
-        if isinstance(parsed, ForStmt):
-            start = self._eval_with_vars(parsed.start_expr, run_vars)
-            end = self._eval_with_vars(parsed.end_expr, run_vars)
-            step = self._eval_with_vars(parsed.step_expr, run_vars) if parsed.step_expr else 1
-            try:
-                if start == int(start): start = int(start)
-            except (OverflowError, ValueError): pass
-            try:
-                if end == int(end): end = int(end)
-            except (OverflowError, ValueError): pass
-            try:
-                if isinstance(step, float) and step == int(step): step = int(step)
-            except (OverflowError, ValueError): pass
-            run_vars[parsed.var] = start
-            self.variables[parsed.var] = start
-            loop_stack.append({'var': parsed.var, 'current': start, 'end': end,
-                               'step': step, 'return_ip': ip})
-            return ExecResult.ADVANCE
-        if isinstance(parsed, NextStmt):
-            if not loop_stack or loop_stack[-1].get('var') != parsed.var:
-                if loop_stack:
-                    raise RuntimeError(f"NEXT {parsed.var} does not match current FOR {loop_stack[-1].get('var', '?')}")
-                raise RuntimeError(f"NEXT {parsed.var} without matching FOR")
-            loop = loop_stack[-1]
-            loop['current'] += loop['step']
-            if (loop['step'] > 0 and loop['current'] <= loop['end']) or \
-               (loop['step'] < 0 and loop['current'] >= loop['end']):
-                run_vars[parsed.var] = loop['current']
-                self.variables[parsed.var] = loop['current']
-                return loop['return_ip'] + 1
-            else:
-                loop_stack.pop()
-                return ExecResult.ADVANCE
-        if isinstance(parsed, WhileStmt):
-            if self._eval_condition(parsed.condition, run_vars):
-                loop_stack.append({'type': 'while', 'cond': parsed.condition, 'return_ip': ip})
-                return ExecResult.ADVANCE
-            else:
-                return self._find_matching_wend(sorted_lines, ip)
-        if isinstance(parsed, LetStmt):
-            val = self._eval_with_vars(parsed.expr, run_vars)
-            run_vars[parsed.name] = val
-            self.variables[parsed.name] = val
-            return ExecResult.ADVANCE
-        if isinstance(parsed, LetArrayStmt):
-            idx = int(self._eval_with_vars(parsed.index_expr, run_vars))
-            val = self._eval_with_vars(parsed.value_expr, run_vars)
-            if parsed.name not in self.arrays:
-                self.arrays[parsed.name] = [0.0] * (idx + 1)
-            while idx >= len(self.arrays[parsed.name]):
-                self.arrays[parsed.name].append(0.0)
-            self.arrays[parsed.name][idx] = val
-            return ExecResult.ADVANCE
-        if isinstance(parsed, PrintStmt):
-            text = parsed.expr
-            suppress_nl = text.rstrip().endswith(';')
-            tab_advance = text.rstrip().endswith(',')
-            if suppress_nl:
-                text = text.rstrip().removesuffix(';').rstrip()
-            elif tab_advance:
-                text = text.rstrip().removesuffix(',').rstrip()
-            # Quantum PRINT: @REG, QUBIT(n), ENTANGLEMENT(a,b)
-            qprint = self._try_quantum_print(text, run_vars)
-            if qprint is not None:
-                if suppress_nl:
-                    self.io.write(qprint)
-                elif tab_advance:
-                    col = len(qprint) % 14
-                    self.io.write(qprint + ' ' * (14 - col if col > 0 else 14))
-                else:
-                    self.io.writeln(qprint)
-                return ExecResult.ADVANCE
-            # SPC/TAB inline
-            def _spc(m_s):
-                return ' ' * max(0, int(self._eval_with_vars(m_s.group(1), run_vars)))
-            def _tab(m_t):
-                return ' ' * max(0, int(self._eval_with_vars(m_t.group(1), run_vars)))
-            text = re.sub(r'\bSPC\s*\(([^)]+)\)', _spc, text, flags=re.IGNORECASE)
-            text = re.sub(r'\bTAB\s*\(([^)]+)\)', _tab, text, flags=re.IGNORECASE)
-            if (text.startswith('"') and text.endswith('"')) or \
-               (text.startswith("'") and text.endswith("'")):
-                output = text[1:-1]
-            else:
-                try:
-                    ns = run_vars.as_dict() if hasattr(run_vars, 'as_dict') else dict(run_vars) if not isinstance(run_vars, dict) else run_vars
-                    result = self._safe_eval(text, extra_ns=ns)
-                    output = str(result)
-                except Exception:
-                    output = text
-            if suppress_nl:
-                self.io.write(output)
-            elif tab_advance:
-                col = len(output) % 14
-                self.io.write(output + ' ' * (14 - col if col > 0 else 14))
-            else:
-                self.io.writeln(output)
-            return ExecResult.ADVANCE
-        if isinstance(parsed, IfThenStmt):
-            cond_vars = run_vars
-            if self.locc_mode and self.locc:
-                cond_vars = {**({} if not hasattr(run_vars, 'as_dict') else run_vars.as_dict()),
-                             **self.locc.classical}
-                if hasattr(run_vars, 'as_dict'):
-                    cond_vars.update(run_vars.as_dict())
-                else:
-                    cond_vars.update(run_vars)
-            result = ExecResult.ADVANCE
-            # Multi-line IF block: IF cond THEN (with empty then_clause)
-            if not parsed.then_clause and not parsed.else_clause:
-                cond_true = self._eval_condition(parsed.condition, cond_vars)
-                if cond_true:
-                    return ExecResult.ADVANCE  # execute next lines until END IF
-                else:
-                    # Skip to ELSE or END IF
-                    depth = 1
-                    scan = ip + 1
-                    while scan < len(sorted_lines):
-                        s = self.program[sorted_lines[scan]].strip().upper()
-                        if s.startswith('IF ') and s.rstrip().endswith('THEN'):
-                            depth += 1
-                        elif s == 'END IF':
-                            depth -= 1
-                            if depth == 0:
-                                return scan + 1
-                        elif depth == 1 and s.startswith('ELSE'):
-                            return scan + 1
-                        scan += 1
-                    return ExecResult.ADVANCE  # no END IF found, fall through
-            if self._eval_condition(parsed.condition, cond_vars):
-                if parsed.then_clause:
-                    r = self._exec_line(parsed.then_clause, qc=qc, loop_stack=loop_stack,
-                                        sorted_lines=sorted_lines, ip=ip, run_vars=run_vars)
-                    if r is not None and r is not ExecResult.ADVANCE:
-                        result = r
-            elif parsed.else_clause:
-                r = self._exec_line(parsed.else_clause, qc=qc, loop_stack=loop_stack,
-                                    sorted_lines=sorted_lines, ip=ip, run_vars=run_vars)
-                if r is not None and r is not ExecResult.ADVANCE:
-                    result = r
-            return result
         if isinstance(parsed, AtRegStmt) and not self.locc_mode:
             raise ValueError("@register syntax requires LOCC mode (try: LOCC <n1> <n2>)")
         if isinstance(parsed, CompoundStmt):
@@ -338,131 +184,21 @@ class ExecutorMixin:
                                 sorted_lines=sorted_lines, ip=ip, run_vars=run_vars)
             return ExecResult.ADVANCE
 
-        # 2. Extended typed dispatch -- direct isinstance checks (no dict/lambda overhead)
-        from qubasic_core.statements import (
-            DataStmt, ReadStmt, OnGotoStmt, OnGosubStmt,
-            SelectCaseStmt, CaseStmt, EndSelectStmt,
-            DoStmt, LoopStmt, ExitStmt,
-            SwapStmt, DefFnStmt, OptionBaseStmt, RestoreStmt,
-            SubStmt, EndSubStmt, FunctionStmt, EndFunctionStmt,
-            CallStmt, LocalStmt, StaticStmt, SharedStmt,
-            OnErrorStmt, ResumeStmt, ErrorStmt, AssertStmt,
-            StopStmt, OnMeasureStmt, OnTimerStmt,
-        )
-        if isinstance(parsed, DataStmt):
-            r = self._cf_data(stmt, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, ReadStmt):
-            r = self._cf_read(stmt, run_vars, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, OnGotoStmt):
-            r = self._cf_on_goto(stmt, run_vars, sorted_lines, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, OnGosubStmt):
-            r = self._cf_on_gosub(stmt, run_vars, sorted_lines, ip, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, SelectCaseStmt):
-            r = self._cf_select_case(stmt, run_vars, sorted_lines, ip, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, CaseStmt):
-            r = self._cf_case(stmt, sorted_lines, ip, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, EndSelectStmt):
-            r = self._cf_end_select(stmt, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, DoStmt):
-            r = self._cf_do(stmt, run_vars, loop_stack, sorted_lines, ip, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, LoopStmt):
-            r = self._cf_loop(stmt, run_vars, loop_stack, sorted_lines, ip, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, ExitStmt):
-            r = self._cf_exit(stmt, loop_stack, sorted_lines, ip, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, SwapStmt):
-            r = self._cf_swap(stmt, run_vars, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, DefFnStmt):
-            r = self._cf_def_fn(stmt, run_vars, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, OptionBaseStmt):
-            r = self._cf_option_base(stmt, parsed=parsed)
-            if r is not None:
-                return r[1]
+        # 2. Delegate to unified control-flow dispatch (handles GOTO, GOSUB,
+        #    FOR/NEXT, WHILE/WEND, IF/THEN, LET, PRINT, DATA/READ, ON GOTO,
+        #    SELECT CASE, DO/LOOP, EXIT, SUB/FUNCTION, ON ERROR, etc.)
+        handled, result = self._exec_control_flow(
+            stmt, loop_stack, sorted_lines, ip, run_vars,
+            lambda s, ls, sl, i, rv: self._exec_line(
+                s, qc=qc, loop_stack=ls, sorted_lines=sl, ip=i, run_vars=rv),
+            parsed=parsed)
+        if handled:
+            return result
+
+        # 3. Remaining statement handlers (not in control-flow dispatch)
+        from qubasic_core.statements import RestoreStmt
         if isinstance(parsed, RestoreStmt):
             return ExecResult.ADVANCE
-        if isinstance(parsed, SubStmt):
-            r = self._cf_sub(stmt, sorted_lines, ip, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, EndSubStmt):
-            r = self._cf_end_sub(stmt, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, FunctionStmt):
-            r = self._cf_function(stmt, sorted_lines, ip, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, EndFunctionStmt):
-            r = self._cf_end_function(stmt, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, CallStmt):
-            r = self._cf_call(stmt, run_vars, sorted_lines, ip, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, LocalStmt):
-            r = self._cf_local(stmt, run_vars, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, StaticStmt):
-            r = self._cf_static(stmt, run_vars, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, SharedStmt):
-            r = self._cf_shared(stmt, run_vars, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, OnErrorStmt):
-            r = self._cf_on_error(stmt, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, ResumeStmt):
-            r = self._cf_resume(stmt, sorted_lines, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, ErrorStmt):
-            r = self._cf_error(stmt, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, AssertStmt):
-            r = self._cf_assert(stmt, run_vars, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, StopStmt):
-            r = self._cf_stop(stmt, sorted_lines, ip, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, OnMeasureStmt):
-            r = self._cf_on_measure(stmt, parsed=parsed)
-            if r is not None:
-                return r[1]
-        if isinstance(parsed, OnTimerStmt):
-            r = self._cf_on_timer(stmt, parsed=parsed)
-            if r is not None:
-                return r[1]
 
         # Multi-line IF block markers — no-ops during execution
         upper = stmt.strip().upper()

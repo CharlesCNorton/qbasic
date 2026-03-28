@@ -91,11 +91,9 @@ LOCC MODE (dual-register distributed quantum simulation)
   STATE A / STATE B         Inspect register states
   BLOCH A 0 / BLOCH B 0     Bloch spheres per register
 
-  SPLIT: max capacity (31+31), no cross-register entanglement
+  SPLIT: max capacity (33 per register), no cross-register entanglement
   JOINT: shared entanglement, limited to ~32 total qubits
   LOCCINFO                  Protocol metrics after run
-  CONNECT "host:port" AS C   Attach remote register (stub — local sim only)
-  DISCONNECT C               Detach remote register
 
 BASIS MEASUREMENT
   MEASURE_X qubit         Measure in X basis (H before measure)

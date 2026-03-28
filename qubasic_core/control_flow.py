@@ -8,11 +8,7 @@ from __future__ import annotations
 import re
 from typing import Any, Callable
 
-from qubasic_core.engine import (
-    ExecResult, ExecOutcome,
-    RE_LET_ARRAY, RE_LET_VAR, RE_PRINT,
-    RE_GOTO, RE_GOSUB, RE_FOR, RE_NEXT, RE_WHILE, RE_IF_THEN,
-)
+from qubasic_core.engine import ExecResult, ExecOutcome
 from qubasic_core.parser import parse_stmt
 from qubasic_core.statements import (
     RawStmt, RemStmt, MeasureStmt, EndStmt, ReturnStmt, WendStmt,
@@ -39,24 +35,14 @@ class ControlFlowMixin:
 
     # ── Control flow helpers (decomposed from _exec_control_flow) ────
     #
-    # Each _cf_* method accepts (self, stmt: str, ..., *, parsed=None).
-    # When parsed is provided the method uses the typed fields directly;
-    # when it is None the method falls back to regex matching on the raw
-    # string.  The raw-string path is retained for backward compatibility
-    # but is no longer exercised by the main execution pipeline (callers
-    # now always supply a parsed Stmt via _exec_control_flow).
-    # Deferred cleanup: the raw-string fallback can be removed once all
-    # external call sites are confirmed to pass parsed objects.
+    # Each _cf_* method accepts (self, stmt, parsed, ...) where parsed is
+    # a required typed Stmt object.  The stmt parameter is retained in the
+    # signature for compatibility with _exec_control_flow's argument
+    # passing but is not used by the methods themselves.
 
     def _cf_let_array(self, stmt: str, run_vars: dict[str, Any],
-                      *, parsed: LetArrayStmt | None = None) -> tuple[bool, ExecOutcome] | None:
-        if parsed is None:
-            m = RE_LET_ARRAY.match(stmt)
-            if not m:
-                return None
-            name, idx_expr, val_expr = m.group(1), m.group(2), m.group(3)
-        else:
-            name, idx_expr, val_expr = parsed.name, parsed.index_expr, parsed.value_expr
+                      parsed: LetArrayStmt) -> tuple[bool, ExecOutcome]:
+        name, idx_expr, val_expr = parsed.name, parsed.index_expr, parsed.value_expr
         idx = int(self._eval_with_vars(idx_expr, run_vars))
         val = self._eval_with_vars(val_expr, run_vars)
         if name not in self.arrays:
@@ -67,28 +53,16 @@ class ControlFlowMixin:
         return True, ExecResult.ADVANCE
 
     def _cf_let_var(self, stmt: str, run_vars: dict[str, Any],
-                    *, parsed: LetStmt | None = None) -> tuple[bool, ExecOutcome] | None:
-        if parsed is None:
-            m = RE_LET_VAR.match(stmt)
-            if not m:
-                return None
-            name, expr = m.group(1), m.group(2)
-        else:
-            name, expr = parsed.name, parsed.expr
+                    parsed: LetStmt) -> tuple[bool, ExecOutcome]:
+        name, expr = parsed.name, parsed.expr
         val = self._eval_with_vars(expr, run_vars)
         run_vars[name] = val
         self.variables[name] = val
         return True, ExecResult.ADVANCE
 
     def _cf_print(self, stmt: str, run_vars: dict[str, Any],
-                  *, parsed: PrintStmt | None = None) -> tuple[bool, ExecOutcome] | None:
-        if parsed is None:
-            m = RE_PRINT.match(stmt)
-            if not m:
-                return None
-            raw_expr = m.group(1)
-        else:
-            raw_expr = parsed.expr
+                  parsed: PrintStmt) -> tuple[bool, ExecOutcome]:
+        raw_expr = parsed.expr
         text = self._substitute_vars(raw_expr.strip(), run_vars)
         # Determine trailing separator: ; suppresses newline, , advances to tab
         suppress_newline = raw_expr.rstrip().endswith(';')
@@ -129,28 +103,16 @@ class ControlFlowMixin:
         return True, ExecResult.ADVANCE
 
     def _cf_goto(self, stmt: str, sorted_lines: list[int],
-                 *, parsed: GotoStmt | None = None) -> tuple[bool, int] | None:
-        if parsed is None:
-            m = RE_GOTO.match(stmt)
-            if not m:
-                return None
-            target = int(m.group(1))
-        else:
-            target = parsed.target
+                 parsed: GotoStmt) -> tuple[bool, int]:
+        target = parsed.target
         for idx, ln in enumerate(sorted_lines):
             if ln == target:
                 return True, idx
         raise RuntimeError(f"GOTO {target}: LINE NOT FOUND")
 
     def _cf_gosub(self, stmt: str, sorted_lines: list[int], ip: int,
-                  *, parsed: GosubStmt | None = None) -> tuple[bool, int] | None:
-        if parsed is None:
-            m = RE_GOSUB.match(stmt)
-            if not m:
-                return None
-            target = int(m.group(1))
-        else:
-            target = parsed.target
+                  parsed: GosubStmt) -> tuple[bool, int]:
+        target = parsed.target
         self._gosub_stack.append(ip + 1)
         for idx, ln in enumerate(sorted_lines):
             if ln == target:
@@ -158,16 +120,9 @@ class ControlFlowMixin:
         raise RuntimeError(f"GOSUB {target}: LINE NOT FOUND")
 
     def _cf_for(self, stmt: str, run_vars: dict[str, Any], loop_stack: list[dict[str, Any]], ip: int,
-                *, parsed: ForStmt | None = None) -> tuple[bool, ExecOutcome] | None:
-        if parsed is None:
-            m = RE_FOR.match(stmt)
-            if not m:
-                return None
-            var = m.group(1)
-            start_expr, end_expr, step_expr = m.group(2), m.group(3), m.group(4)
-        else:
-            var = parsed.var
-            start_expr, end_expr, step_expr = parsed.start_expr, parsed.end_expr, parsed.step_expr
+                parsed: ForStmt) -> tuple[bool, ExecOutcome]:
+        var = parsed.var
+        start_expr, end_expr, step_expr = parsed.start_expr, parsed.end_expr, parsed.step_expr
         start = self._eval_with_vars(start_expr, run_vars)
         end = self._eval_with_vars(end_expr, run_vars)
         step = self._eval_with_vars(step_expr, run_vars) if step_expr else 1
@@ -190,14 +145,8 @@ class ControlFlowMixin:
         return True, ExecResult.ADVANCE
 
     def _cf_next(self, stmt: str, run_vars: dict[str, Any], loop_stack: list[dict[str, Any]],
-                 *, parsed: NextStmt | None = None) -> tuple[bool, ExecOutcome] | None:
-        if parsed is None:
-            m = RE_NEXT.match(stmt)
-            if not m:
-                return None
-            var = m.group(1)
-        else:
-            var = parsed.var
+                 parsed: NextStmt) -> tuple[bool, ExecOutcome]:
+        var = parsed.var
         if not loop_stack or loop_stack[-1].get('var') != var:
             if loop_stack:
                 expected = loop_stack[-1].get('var', '?')
@@ -237,14 +186,8 @@ class ControlFlowMixin:
 
     def _cf_while(self, stmt: str, run_vars: dict[str, Any], loop_stack: list[dict[str, Any]],
                   sorted_lines: list[int], ip: int,
-                  *, parsed: WhileStmt | None = None) -> tuple[bool, ExecOutcome] | None:
-        if parsed is None:
-            m = RE_WHILE.match(stmt)
-            if not m:
-                return None
-            cond = m.group(1).strip()
-        else:
-            cond = parsed.condition
+                  parsed: WhileStmt) -> tuple[bool, ExecOutcome]:
+        cond = parsed.condition
         if self._eval_condition(cond, run_vars):
             loop_stack.append({'type': 'while', 'cond': cond, 'return_ip': ip})
             return True, ExecResult.ADVANCE
@@ -266,18 +209,10 @@ class ControlFlowMixin:
     def _cf_if_then(self, stmt: str, run_vars: dict[str, Any], loop_stack: list[dict[str, Any]],
                     sorted_lines: list[int], ip: int,
                     exec_fn: Callable[..., Any],
-                    *, parsed: IfThenStmt | None = None) -> tuple[bool, ExecOutcome] | None:
-        if parsed is None:
-            m = RE_IF_THEN.match(stmt)
-            if not m:
-                return None
-            cond_str = m.group(1).strip()
-            then_clause = m.group(2).strip()
-            else_clause = m.group(3).strip() if m.group(3) else None
-        else:
-            cond_str = parsed.condition
-            then_clause = parsed.then_clause
-            else_clause = parsed.else_clause
+                    parsed: IfThenStmt) -> tuple[bool, ExecOutcome]:
+        cond_str = parsed.condition
+        then_clause = parsed.then_clause
+        else_clause = parsed.else_clause
         cond_vars = run_vars
         if self.locc_mode and self.locc:
             cond_vars = {**run_vars, **self.locc.classical}
@@ -294,260 +229,58 @@ class ControlFlowMixin:
         return True, result
 
     # ── Type-based dispatch table ────────────────────────────────────
-    # Maps parsed Stmt types to handler functions.  Each handler
-    # receives (self, stmt, parsed, loop_stack, sorted_lines, ip,
-    # run_vars, exec_fn) and returns (handled: bool, result).  Built
-    # once as a class variable so the dict lookup cost is paid
-    # per-call, not per-class.
-
-    @staticmethod
-    def _d_rem(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        return True, ExecResult.ADVANCE
-
-    _d_measure = _d_rem  # same behavior
-
-    @staticmethod
-    def _d_end(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        return True, ExecResult.END
-
-    @staticmethod
-    def _d_return(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        if not self._gosub_stack:
-            raise RuntimeError("RETURN WITHOUT GOSUB")
-        return True, self._gosub_stack.pop()
-
-    @staticmethod
-    def _d_wend(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        return self._cf_wend(run_vars, loop_stack, sorted_lines, ip)
-
-    @staticmethod
-    def _d_let_array(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_let_array(stmt, run_vars, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_let_var(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_let_var(stmt, run_vars, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_print(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_print(stmt, run_vars, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_goto(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_goto(stmt, sorted_lines, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_gosub(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_gosub(stmt, sorted_lines, ip, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_for(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_for(stmt, run_vars, loop_stack, ip, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_next(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_next(stmt, run_vars, loop_stack, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_while(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_while(stmt, run_vars, loop_stack, sorted_lines, ip, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_if_then(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_if_then(stmt, run_vars, loop_stack, sorted_lines, ip, exec_fn, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_data(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_data(stmt, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_read(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_read(stmt, run_vars, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_on_goto(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_on_goto(stmt, run_vars, sorted_lines, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_on_gosub(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_on_gosub(stmt, run_vars, sorted_lines, ip, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_select_case(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_select_case(stmt, run_vars, sorted_lines, ip, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_case(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_case(stmt, sorted_lines, ip, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_end_select(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_end_select(stmt, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_do(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_do(stmt, run_vars, loop_stack, sorted_lines, ip, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_loop(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_loop(stmt, run_vars, loop_stack, sorted_lines, ip, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_exit(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_exit(stmt, loop_stack, sorted_lines, ip, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_swap(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_swap(stmt, run_vars, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_def_fn(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_def_fn(stmt, run_vars, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_option_base(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_option_base(stmt, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_sub(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_sub(stmt, sorted_lines, ip, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_end_sub(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_end_sub(stmt, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_function(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_function(stmt, sorted_lines, ip, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_end_function(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_end_function(stmt, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_call(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_call(stmt, run_vars, sorted_lines, ip, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_local(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_local(stmt, run_vars, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_static(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_static(stmt, run_vars, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_shared(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_shared(stmt, run_vars, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_on_error(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_on_error(stmt, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_resume(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_resume(stmt, sorted_lines, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_error(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_error(stmt, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_assert(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_assert(stmt, run_vars, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_stop(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_stop(stmt, sorted_lines, ip, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_on_measure(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_on_measure(stmt, parsed=parsed)
-        return r if r is not None else (False, None)
-
-    @staticmethod
-    def _d_on_timer(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn):
-        r = self._cf_on_timer(stmt, parsed=parsed)
-        return r if r is not None else (False, None)
+    # Maps parsed Stmt types to handler lambdas.  Each lambda receives
+    # (self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars,
+    # exec_fn) and returns (handled: bool, result).
 
     _CF_DISPATCH: dict[type, Callable] = {
-        RemStmt:         _d_rem,
-        MeasureStmt:     _d_measure,
-        EndStmt:         _d_end,
-        ReturnStmt:      _d_return,
-        WendStmt:        _d_wend,
-        LetArrayStmt:    _d_let_array,
-        LetStmt:         _d_let_var,
-        PrintStmt:       _d_print,
-        GotoStmt:        _d_goto,
-        GosubStmt:       _d_gosub,
-        ForStmt:         _d_for,
-        NextStmt:        _d_next,
-        WhileStmt:       _d_while,
-        IfThenStmt:      _d_if_then,
-        DataStmt:        _d_data,
-        ReadStmt:        _d_read,
-        OnGotoStmt:      _d_on_goto,
-        OnGosubStmt:     _d_on_gosub,
-        SelectCaseStmt:  _d_select_case,
-        CaseStmt:        _d_case,
-        EndSelectStmt:   _d_end_select,
-        DoStmt:          _d_do,
-        LoopStmt:        _d_loop,
-        ExitStmt:        _d_exit,
-        SwapStmt:        _d_swap,
-        DefFnStmt:       _d_def_fn,
-        OptionBaseStmt:  _d_option_base,
-        SubStmt:         _d_sub,
-        EndSubStmt:      _d_end_sub,
-        FunctionStmt:    _d_function,
-        EndFunctionStmt: _d_end_function,
-        CallStmt:        _d_call,
-        LocalStmt:       _d_local,
-        StaticStmt:      _d_static,
-        SharedStmt:      _d_shared,
-        OnErrorStmt:     _d_on_error,
-        ResumeStmt:      _d_resume,
-        ErrorStmt:       _d_error,
-        AssertStmt:      _d_assert,
-        StopStmt:        _d_stop,
-        OnMeasureStmt:   _d_on_measure,
-        OnTimerStmt:     _d_on_timer,
+        # Trivial handlers (no _cf_* method needed)
+        RemStmt:         lambda s, st, p, ls, sl, ip, rv, ef: (True, ExecResult.ADVANCE),
+        MeasureStmt:     lambda s, st, p, ls, sl, ip, rv, ef: (True, ExecResult.ADVANCE),
+        EndStmt:         lambda s, st, p, ls, sl, ip, rv, ef: (True, ExecResult.END),
+        ReturnStmt:      lambda s, st, p, ls, sl, ip, rv, ef: (_ for _ in ()).throw(RuntimeError("RETURN WITHOUT GOSUB")) if not s._gosub_stack else (True, s._gosub_stack.pop()),
+        # Handlers defined in control_flow.py (parsed is positional)
+        WendStmt:        lambda s, st, p, ls, sl, ip, rv, ef: s._cf_wend(rv, ls, sl, ip),
+        LetArrayStmt:    lambda s, st, p, ls, sl, ip, rv, ef: s._cf_let_array(st, rv, p),
+        LetStmt:         lambda s, st, p, ls, sl, ip, rv, ef: s._cf_let_var(st, rv, p),
+        PrintStmt:       lambda s, st, p, ls, sl, ip, rv, ef: s._cf_print(st, rv, p),
+        GotoStmt:        lambda s, st, p, ls, sl, ip, rv, ef: s._cf_goto(st, sl, p),
+        GosubStmt:       lambda s, st, p, ls, sl, ip, rv, ef: s._cf_gosub(st, sl, ip, p),
+        ForStmt:         lambda s, st, p, ls, sl, ip, rv, ef: s._cf_for(st, rv, ls, ip, p),
+        NextStmt:        lambda s, st, p, ls, sl, ip, rv, ef: s._cf_next(st, rv, ls, p),
+        WhileStmt:       lambda s, st, p, ls, sl, ip, rv, ef: s._cf_while(st, rv, ls, sl, ip, p),
+        IfThenStmt:      lambda s, st, p, ls, sl, ip, rv, ef: s._cf_if_then(st, rv, ls, sl, ip, ef, p),
+        # Handlers defined in classic.py (parsed is keyword-only)
+        DataStmt:        lambda s, st, p, ls, sl, ip, rv, ef: s._cf_data(st, parsed=p),
+        ReadStmt:        lambda s, st, p, ls, sl, ip, rv, ef: s._cf_read(st, rv, parsed=p),
+        OnGotoStmt:      lambda s, st, p, ls, sl, ip, rv, ef: s._cf_on_goto(st, rv, sl, parsed=p),
+        OnGosubStmt:     lambda s, st, p, ls, sl, ip, rv, ef: s._cf_on_gosub(st, rv, sl, ip, parsed=p),
+        SelectCaseStmt:  lambda s, st, p, ls, sl, ip, rv, ef: s._cf_select_case(st, rv, sl, ip, parsed=p),
+        CaseStmt:        lambda s, st, p, ls, sl, ip, rv, ef: s._cf_case(st, sl, ip, parsed=p),
+        EndSelectStmt:   lambda s, st, p, ls, sl, ip, rv, ef: s._cf_end_select(st, parsed=p),
+        DoStmt:          lambda s, st, p, ls, sl, ip, rv, ef: s._cf_do(st, rv, ls, sl, ip, parsed=p),
+        LoopStmt:        lambda s, st, p, ls, sl, ip, rv, ef: s._cf_loop(st, rv, ls, sl, ip, parsed=p),
+        ExitStmt:        lambda s, st, p, ls, sl, ip, rv, ef: s._cf_exit(st, ls, sl, ip, parsed=p),
+        SwapStmt:        lambda s, st, p, ls, sl, ip, rv, ef: s._cf_swap(st, rv, parsed=p),
+        DefFnStmt:       lambda s, st, p, ls, sl, ip, rv, ef: s._cf_def_fn(st, rv, parsed=p),
+        OptionBaseStmt:  lambda s, st, p, ls, sl, ip, rv, ef: s._cf_option_base(st, parsed=p),
+        # Handlers defined in subs.py (parsed is keyword-only)
+        SubStmt:         lambda s, st, p, ls, sl, ip, rv, ef: s._cf_sub(st, sl, ip, parsed=p),
+        EndSubStmt:      lambda s, st, p, ls, sl, ip, rv, ef: s._cf_end_sub(st, parsed=p),
+        FunctionStmt:    lambda s, st, p, ls, sl, ip, rv, ef: s._cf_function(st, sl, ip, parsed=p),
+        EndFunctionStmt: lambda s, st, p, ls, sl, ip, rv, ef: s._cf_end_function(st, parsed=p),
+        CallStmt:        lambda s, st, p, ls, sl, ip, rv, ef: s._cf_call(st, rv, sl, ip, parsed=p),
+        LocalStmt:       lambda s, st, p, ls, sl, ip, rv, ef: s._cf_local(st, rv, parsed=p),
+        StaticStmt:      lambda s, st, p, ls, sl, ip, rv, ef: s._cf_static(st, rv, parsed=p),
+        SharedStmt:      lambda s, st, p, ls, sl, ip, rv, ef: s._cf_shared(st, rv, parsed=p),
+        # Handlers defined in debug.py (parsed is keyword-only)
+        OnErrorStmt:     lambda s, st, p, ls, sl, ip, rv, ef: s._cf_on_error(st, parsed=p),
+        ResumeStmt:      lambda s, st, p, ls, sl, ip, rv, ef: s._cf_resume(st, sl, parsed=p),
+        ErrorStmt:       lambda s, st, p, ls, sl, ip, rv, ef: s._cf_error(st, parsed=p),
+        AssertStmt:      lambda s, st, p, ls, sl, ip, rv, ef: s._cf_assert(st, rv, parsed=p),
+        StopStmt:        lambda s, st, p, ls, sl, ip, rv, ef: s._cf_stop(st, sl, ip, parsed=p),
+        OnMeasureStmt:   lambda s, st, p, ls, sl, ip, rv, ef: s._cf_on_measure(st, parsed=p),
+        OnTimerStmt:     lambda s, st, p, ls, sl, ip, rv, ef: s._cf_on_timer(st, parsed=p),
     }
 
     def _exec_control_flow(
@@ -557,11 +290,11 @@ class ControlFlowMixin:
         *, parsed=None,
     ) -> tuple[bool, ExecOutcome | None]:
         """Shared control flow for both Qiskit and LOCC execution paths.
-        Returns (handled, result) — if handled is True, result is the return value.
-        exec_fn is the recursive line executor for IF/multi-statement dispatch.
+        Returns (handled, result) -- if handled is True, result is the
+        return value.  exec_fn is the recursive line executor for
+        IF/multi-statement dispatch.
 
-        Dispatches via dict lookup on the parsed Stmt type (O(1)) instead
-        of a linear chain of regex-matching _cf_* calls.
+        Dispatches via dict lookup on the parsed Stmt type (O(1)).
 
         If *parsed* is provided, the parse_stmt call is skipped (avoids
         redundant parsing when the caller has already parsed the statement).
@@ -572,5 +305,5 @@ class ControlFlowMixin:
         if handler is not None:
             return handler(self, stmt, parsed, loop_stack, sorted_lines, ip, run_vars, exec_fn)
 
-        # RawStmt or unmapped type — not handled by control flow
+        # RawStmt or unmapped type -- not handled by control flow
         return False, None

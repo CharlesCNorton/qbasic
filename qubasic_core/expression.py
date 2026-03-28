@@ -11,6 +11,50 @@ import operator
 from typing import Any
 
 
+def _replace_dollar_outside_strings(expr_str: str) -> str:
+    """Apply $->_S_ replacement only outside quoted string literals."""
+    result: list[str] = []
+    i = 0
+    n = len(expr_str)
+    while i < n:
+        ch = expr_str[i]
+        if ch in ('"', "'"):
+            # Copy the entire quoted region verbatim
+            quote = ch
+            j = i + 1
+            while j < n and expr_str[j] != quote:
+                j += 1
+            # Include closing quote (or end of string if missing)
+            result.append(expr_str[i:j + 1])
+            i = j + 1
+        else:
+            result.append(ch)
+            i += 1
+    text = ''.join(result)
+    # Now apply the substitution only to non-quoted segments
+    parts: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch in ('"', "'"):
+            quote = ch
+            j = i + 1
+            while j < n and text[j] != quote:
+                j += 1
+            parts.append(text[i:j + 1])
+            i = j + 1
+        else:
+            # Accumulate non-quoted text
+            j = i
+            while j < n and text[j] not in ('"', "'"):
+                j += 1
+            segment = text[i:j]
+            parts.append(re.sub(r'(\w+)\$', r'\1_S_', segment))
+            i = j
+    return ''.join(parts)
+
+
 class ExpressionMixin:
     """AST-based safe expression evaluation. No eval().
 
@@ -114,16 +158,17 @@ class ExpressionMixin:
             raise ValueError("UNSUPPORTED SUBSCRIPT")
         raise ValueError(f"UNSUPPORTED EXPRESSION: {ast.dump(node)}")
 
-    def _safe_eval(self, expr: Any, extra_ns: dict[str, Any] | None = None) -> Any:
-        """Evaluate expression using AST walking — no eval()."""
-        ns = {**self._SAFE_CONSTS, **self._SAFE_FUNCS, **self.variables}
-        if extra_ns:
-            ns.update(extra_ns)
-        for aname, adata in self.arrays.items():
-            ns[aname] = lambda i, d=adata: d[int(i)]
+    def _build_base_ns(self) -> dict[str, Any]:
+        """Build the function/constant namespace once per instance.
+
+        This contains everything that does not change between calls:
+        safe math functions, constants, and instance-specific BASIC
+        builtins (RND, TIMER, POS, PEEK, USR, EOF, FRE, string fns).
+        Cached on self._base_ns and returned.
+        """
+        ns: dict[str, Any] = {**self._SAFE_CONSTS, **self._SAFE_FUNCS}
         # Instance-specific functions
         ns['RND'] = lambda x=0: random.random()
-        ns['TIMER'] = getattr(self, '_run_timer', time.time)()
         ns['POS'] = lambda x=0: 0
         if hasattr(self, '_peek'):
             ns['PEEK'] = lambda addr: self._peek(addr)
@@ -133,6 +178,44 @@ class ExpressionMixin:
             ns['EOF'] = lambda h: self._eof(h)
         if hasattr(self, '_get_string_ns'):
             ns.update(self._get_string_ns())
+        try:
+            import psutil
+            ns['FRE'] = lambda x=0: psutil.virtual_memory().available
+        except ImportError:
+            ns['FRE'] = lambda x=0: 0
+        self._base_ns = ns
+        return ns
+
+    def _safe_eval(self, expr: Any, extra_ns: dict[str, Any] | None = None) -> Any:
+        """Evaluate expression using AST walking — no eval()."""
+        # Start from the cached base namespace (functions/constants)
+        base = getattr(self, '_base_ns', None) or self._build_base_ns()
+        ns = {**base}
+        # TIMER must be evaluated fresh each call
+        ns['TIMER'] = getattr(self, '_run_timer', time.time)()
+        # Merge current variable state
+        ns.update(self.variables)
+        if extra_ns:
+            ns.update(extra_ns)
+        _dims = getattr(self, '_array_dims', {})
+        for aname, adata in self.arrays.items():
+            def _array_accessor(*indices, d=adata, n=aname, dims=_dims.get(aname)):
+                if dims and len(indices) > 1:
+                    # Multi-dimensional: compute flat index from (i, j, ...)
+                    flat = 0
+                    stride = 1
+                    for k in range(len(indices) - 1, -1, -1):
+                        idx = int(indices[k])
+                        flat += idx * stride
+                        stride *= dims[k] if k < len(dims) else 1
+                    idx = flat
+                else:
+                    idx = int(indices[0]) if indices else 0
+                if idx < 0 or idx >= len(d):
+                    raise ValueError(f"ARRAY INDEX OUT OF RANGE: {n}[{idx}]")
+                return d[idx]
+            ns[aname] = _array_accessor
+        # User-defined functions (DEF FN) — these can change at runtime
         if hasattr(self, '_user_fns'):
             for fname, fdef in self._user_fns.items():
                 fn_params = fdef['params']
@@ -155,11 +238,6 @@ class ExpressionMixin:
                 fn = lambda *args, n=fname, sl=sorted_lines: self._invoke_function(n, list(args), sl)
                 ns[fname] = fn
                 ns[fname.lower()] = fn
-        try:
-            import psutil
-            ns['FRE'] = lambda x=0: psutil.virtual_memory().available
-        except ImportError:
-            ns['FRE'] = lambda x=0: 0
         # Add Python-safe aliases for all $-suffixed keys in namespace
         for k, v in list(ns.items()):
             if '$' in k:
@@ -169,9 +247,9 @@ class ExpressionMixin:
         expr_str = re.sub(r'&H([0-9A-Fa-f]+)', r'0x\1', expr_str)
         expr_str = re.sub(r'&B([01]+)', r'0b\1', expr_str)
         # Normalize FN prefix: "FN square(x)" -> "square(x)"
-        expr_str = re.sub(r'\bFN\s+(\w+)', r'\1', expr_str, flags=re.IGNORECASE)
+        expr_str = re.sub(r'\bFN\s+(\w+)\s*\(', r'\1(', expr_str, flags=re.IGNORECASE)
         # Normalize $ in identifiers for Python AST compatibility
-        expr_str = re.sub(r'(\w+)\$', r'\1_S_', expr_str)
+        expr_str = _replace_dollar_outside_strings(expr_str)
         if not expr_str:
             raise ValueError("EMPTY EXPRESSION")
         try:
