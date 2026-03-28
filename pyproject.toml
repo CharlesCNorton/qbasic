@@ -33,21 +33,20 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/CharlesCNorton/qbasic"
-Repository = "https://github.com/CharlesCNorton/qbasic"
-Issues = "https://github.com/CharlesCNorton/qbasic/issues"
+Homepage = "https://github.com/CharlesCNorton/qubasic"
+Repository = "https://github.com/CharlesCNorton/qubasic"
+Issues = "https://github.com/CharlesCNorton/qubasic/issues"
 
 [project.optional-dependencies]
 charts = ["plotille>=5.0"]
 readline = ["pyreadline3>=3.4; sys_platform == 'win32'"]
 
 [project.scripts]
-qbasic = "qbasic:main"
-qubasic = "qbasic:main"
+qubasic = "qubasic:main"
 
 [tool.setuptools]
-py-modules = ["qbasic"]
-packages = ["qbasic_core"]
+py-modules = ["qubasic"]
+packages = ["qubasic_core"]
 
 [tool.setuptools.package-data]
 
@@ -55,7 +54,7 @@ packages = ["qbasic_core"]
 "share/qubasic/examples" = ["examples/*.qb"]
 
 [tool.coverage.run]
-source = ["qbasic_core"]
+source = ["qubasic_core"]
 omit = ["*/test_*"]
 
 [tool.coverage.report]

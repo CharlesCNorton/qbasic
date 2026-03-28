@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Consolidated test suite for QBASIC features not covered by test_qbasic.py.
+Consolidated test suite for QBASIC features not covered by test_qubasic.py.
 
 Covers: DO/LOOP, PEEK/POKE, SYS, USR, WAIT, DUMP, MAP, CATALOG,
 string functions, screen commands, SUB/FUNCTION, LOCAL/STATIC/SHARED,
@@ -26,15 +26,15 @@ import tempfile
 import builtins
 
 sys.path.insert(0, os.path.dirname(__file__))
-from qbasic_core.terminal import QBasicTerminal
-from qbasic_core.errors import (
+from qubasic_core.terminal import QBasicTerminal
+from qubasic_core.errors import (
     QBasicError, QBasicSyntaxError, QBasicRuntimeError,
     QBasicBuildError, QBasicRangeError, QBasicIOError,
     QBasicUndefinedError,
 )
-from qbasic_core.io_protocol import IOPort, StdIOPort
-from qbasic_core.parser import parse_stmt
-from qbasic_core.statements import (
+from qubasic_core.io_protocol import IOPort, StdIOPort
+from qubasic_core.parser import parse_stmt
+from qubasic_core.statements import (
     Stmt, RawStmt, RemStmt, MeasureStmt, EndStmt, ReturnStmt,
     BarrierStmt, WendStmt, GotoStmt, GosubStmt, ForStmt, NextStmt,
     WhileStmt, IfThenStmt, LetStmt, LetArrayStmt, PrintStmt,
@@ -209,7 +209,7 @@ class TestClassicBasic(unittest.TestCase):
 
     def test_exit_statements(self):
         """EXIT FOR, EXIT WHILE, EXIT DO handler logic."""
-        from qbasic_core.engine import ExecResult
+        from qubasic_core.engine import ExecResult
 
         # EXIT FOR
         self.t.program = {10: 'FOR i = 1 TO 10', 20: 'EXIT FOR', 30: 'NEXT i', 40: 'PRINT i'}
@@ -392,7 +392,7 @@ class TestMemoryMap(unittest.TestCase):
         self.assertNotIn('TIMEOUT', out)
 
         # Timeout via monkey-patched time
-        import qbasic_core.memory as mem_mod
+        import qubasic_core.memory as mem_mod
         orig = mem_mod.time.time
         call_count = [0]
         def fast_time():
@@ -433,7 +433,7 @@ class TestMemoryMap(unittest.TestCase):
 class TestStrings(unittest.TestCase):
     def test_string_functions(self):
         """LEFT, RIGHT, MID, CHR, ASC, INSTR, HEX, BIN, STR, VAL, LEN."""
-        from qbasic_core.strings import (
+        from qubasic_core.strings import (
             _left, _right, _mid, _chr_fn, _asc, _instr,
             _hex_fn, _bin_fn, _str_fn, _val_fn, _len_fn,
         )
@@ -597,7 +597,7 @@ class TestSubsAndScope(unittest.TestCase):
 
     def test_error_handling(self):
         """ON ERROR GOTO, GOTO 0, _handle_error, RESUME NEXT, ERR/ERL, ERROR n, ASSERT."""
-        from qbasic_core.engine import ExecResult
+        from qubasic_core.engine import ExecResult
 
         # ON ERROR GOTO sets target
         result = self.t._cf_on_error('ON ERROR GOTO 100')
@@ -805,13 +805,13 @@ class TestDebugAndProfile(unittest.TestCase):
         sorted_lines = [100, 110]
 
         # Time hasn't elapsed enough
-        with patch('qbasic_core.debug.time') as mock_time:
+        with patch('qubasic_core.debug.time') as mock_time:
             mock_time.time.return_value = 1000.5  # only 0.5s elapsed
             result = t._check_timer_callback(sorted_lines, 0)
             self.assertIsNone(result)  # should not fire
 
         # Time has elapsed
-        with patch('qbasic_core.debug.time') as mock_time:
+        with patch('qubasic_core.debug.time') as mock_time:
             mock_time.time.return_value = 1001.5  # 1.5s elapsed > 1.0 interval
             result = t._check_timer_callback(sorted_lines, 0)
             self.assertIsNotNone(result)  # should fire, returning ip to jump to
@@ -1183,7 +1183,7 @@ class TestQuantumOps(unittest.TestCase):
 
     def test_on_measure_on_timer(self):
         """ON MEASURE GOSUB and ON TIMER GOSUB set targets."""
-        from qbasic_core.engine import ExecResult
+        from qubasic_core.engine import ExecResult
 
         # ON MEASURE
         result = self.t._cf_on_measure('ON MEASURE GOSUB 100')
@@ -1219,8 +1219,8 @@ class TestQuantumOps(unittest.TestCase):
 
     def test_locc_3party_ghz(self):
         """3-party GHZ via LOCCEngine."""
-        from qbasic_core.locc_engine import LOCCEngine
-        from qbasic_core.gates import _apply_gate_np, _MAT_CX
+        from qubasic_core.locc_engine import LOCCEngine
+        from qubasic_core.gates import _apply_gate_np, _MAT_CX
         eng = LOCCEngine([1, 1, 1], joint=True)
         eng.apply('A', 'H', (), [0])
         eng.sv = _apply_gate_np(eng.sv, _MAT_CX, [0, 1], 3)
@@ -1459,7 +1459,7 @@ class TestIntegration(unittest.TestCase):
 
         # bell.qb
         r = subprocess.run(
-            [sys.executable, '-X', 'utf8', 'qbasic.py', '--json', 'examples/bell.qb'],
+            [sys.executable, '-X', 'utf8', 'qubasic.py', '--json', 'examples/bell.qb'],
             capture_output=True, text=True, cwd=os.path.dirname(__file__), timeout=30)
         self.assertEqual(r.returncode, 0)
         data = json.loads(r.stdout)
@@ -1470,7 +1470,7 @@ class TestIntegration(unittest.TestCase):
 
         # grover3.qb
         r = subprocess.run(
-            [sys.executable, '-X', 'utf8', 'qbasic.py', '--json', 'examples/grover3.qb'],
+            [sys.executable, '-X', 'utf8', 'qubasic.py', '--json', 'examples/grover3.qb'],
             capture_output=True, text=True, cwd=os.path.dirname(__file__), timeout=30)
         self.assertEqual(r.returncode, 0)
         data = json.loads(r.stdout)
@@ -1481,7 +1481,7 @@ class TestIntegration(unittest.TestCase):
         import subprocess, json
         r = subprocess.run(
             [sys.executable, '-X', 'utf8', '-c',
-             'import json; from qbasic_core.terminal import QBasicTerminal; '
+             'import json; from qubasic_core.terminal import QBasicTerminal; '
              't = QBasicTerminal(); t.num_qubits = 2; t.shots = 1000; '
              't.process("10 H 0", track_undo=False); '
              't.process("20 CX 0,1", track_undo=False); '
@@ -1500,7 +1500,7 @@ class TestIntegration(unittest.TestCase):
         for state in ('00', '11'):
             self.assertGreater(counts.get(state, 0), 300)
 
-    # Grover correctness is tested in test_qbasic.py with real simulation;
+    # Grover correctness is tested in test_qubasic.py with real simulation;
     # test_cures.py runs under auto-mock which returns random counts.
 
 
@@ -1667,7 +1667,7 @@ class TestPropertyBased(unittest.TestCase):
     @settings(max_examples=100)
     def test_parser_no_crash(self, text):
         """Parser should never crash on arbitrary input."""
-        from qbasic_core.parser import parse_stmt
+        from qubasic_core.parser import parse_stmt
         try:
             parse_stmt(text)
         except Exception:

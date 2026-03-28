@@ -1,4 +1,4 @@
-# QBASIC
+# QUBASIC
 
 Quantum computing in a BASIC REPL.
 
@@ -15,7 +15,7 @@ RAN 3 lines, 4 qubits, 1024 shots in 0.12s  [depth=2, gates=2]
  |11>     506   49.4%  █████████████████
 ```
 
-QBASIC is a quantum computing environment built on Qiskit Aer that uses BASIC syntax for circuit construction, execution, and analysis. It runs as an interactive REPL, as a script interpreter, or as a headless Python engine.
+QUBASIC is a quantum computing environment built on Qiskit Aer that uses BASIC syntax for circuit construction, execution, and analysis. It runs as an interactive REPL, as a script interpreter, or as a headless Python engine.
 
 **For agents**: minimal syntax, maximum context-window efficiency. `10 H 0 / 20 CX 0,1 / 30 MEASURE / RUN` replaces 8 lines of Qiskit Python. JSON output mode (`--json`) for pipeline integration. `Engine` class for direct API use without subprocess overhead.
 
@@ -40,18 +40,18 @@ Requires Python >= 3.10, Qiskit >= 1.0, qiskit-aer >= 0.13.
 ## Usage
 
 ```
-python qbasic.py                  Interactive REPL
-python qbasic.py script.qb        Run a script file
-python qbasic.py --quiet script    Suppress banner, output results only
-python qbasic.py --json script     Machine-readable JSON output
-python qbasic.py --help            Show CLI help
+python qubasic.py                  Interactive REPL
+python qubasic.py script.qb        Run a script file
+python qubasic.py --quiet script    Suppress banner, output results only
+python qubasic.py --json script     Machine-readable JSON output
+python qubasic.py --help            Show CLI help
 ```
 
 Headless (no REPL):
 
 ```python
-from qbasic_core.engine_state import Engine
-from qbasic_core.terminal import QBasicTerminal
+from qubasic_core.engine_state import Engine
+from qubasic_core.terminal import QBasicTerminal
 
 t = QBasicTerminal()
 t.num_qubits = 2
@@ -658,7 +658,7 @@ Programs with SEND use prefix/suffix splitting: the deterministic prefix (before
 ## JSON output
 
 ```
-python qbasic.py --json examples/bell.qb
+python qubasic.py --json examples/bell.qb
 ```
 
 ```json
@@ -672,8 +672,8 @@ python qbasic.py --json examples/bell.qb
 ## Architecture
 
 ```
-qbasic.py               CLI entry point
-qbasic_core/
+qubasic.py              CLI entry point
+qubasic_core/
   engine_state.py        Engine: standalone state container
   terminal.py            QBasicTerminal: REPL + command dispatch
   engine.py              Constants, gate tables, numpy simulation, LOCCEngine
