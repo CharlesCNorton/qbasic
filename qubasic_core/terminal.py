@@ -216,6 +216,72 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
         self._init_profiler()
         self._init_file_handles()
 
+    # ── Backend factory ─────────────────────────────────────────────
+
+    def _make_backend(self, method: str = 'statevector', *,
+                      include_noise: bool = False) -> 'AerSimulator':
+        """Build an AerSimulator respecting sim_device and optionally noise.
+
+        Centralizes backend construction so GPU, noise, and tuning options
+        propagate consistently to every execution path (cmd_run, cmd_step,
+        run_immediate, statevector extraction).
+        """
+        opts: dict = {'method': method}
+        if self.sim_device == 'GPU':
+            opts['device'] = 'GPU'
+        if include_noise:
+            noise = self._noise_model
+            if not noise and hasattr(self, '_qubit_noise') and self._qubit_noise:
+                noise = self._build_qubit_noise()
+            if noise:
+                opts['noise_model'] = noise
+        if hasattr(self, '_fusion_enable'):
+            opts['fusion_enable'] = self._fusion_enable
+        if hasattr(self, '_mps_truncation'):
+            opts['matrix_product_state_truncation_threshold'] = self._mps_truncation
+        if hasattr(self, '_sv_parallel_threshold'):
+            opts['statevector_parallel_threshold'] = self._sv_parallel_threshold
+        if hasattr(self, '_es_approx_error'):
+            opts['extended_stabilizer_approximation_error'] = self._es_approx_error
+        return AerSimulator(**opts)
+
+    def _build_qubit_noise(self):
+        """Build a NoiseModel from per-qubit memory-mapped noise settings."""
+        try:
+            from qiskit_aer.noise import (
+                NoiseModel, depolarizing_error, amplitude_damping_error,
+                phase_damping_error,
+            )
+            nm = NoiseModel()
+            _type_map = {1: depolarizing_error, 2: amplitude_damping_error,
+                         3: phase_damping_error}
+            _1q_gates = ['h', 'x', 'y', 'z', 'rx', 'ry', 'rz', 'p', 'u',
+                         'id', 's', 't', 'sdg', 'tdg', 'sx']
+            for q, (ntype, nparam) in self._qubit_noise.items():
+                if ntype in _type_map and nparam > 0 and q < self.num_qubits:
+                    if ntype == 1:
+                        err = _type_map[ntype](nparam, 1)
+                    else:
+                        err = _type_map[ntype](nparam)
+                    nm.add_quantum_error(err, _1q_gates, [q])
+            return nm
+        except ImportError:
+            return None
+
+    @property
+    def _transpile_opt_level(self) -> int:
+        """Optimization level for transpilation.
+
+        When a noise model is active, use level 0 so the transpiler does not
+        collapse gate sequences (e.g. H-H -> identity) before noise channels
+        can attach to them.  Without noise, use default (1) for performance.
+        """
+        if self._noise_model is not None:
+            return 0
+        if hasattr(self, '_qubit_noise') and self._qubit_noise:
+            return 0
+        return 1
+
     # ── REPL ──────────────────────────────────────────────────────────
 
     def _setup_readline(self) -> None:
@@ -445,6 +511,17 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
             return
         val = rest.strip().upper()
         if val in ('GPU', 'CPU'):
+            if val == 'GPU':
+                # Probe whether the Aer build actually supports GPU
+                try:
+                    probe = AerSimulator(method='statevector', device='GPU')
+                    from qiskit import QuantumCircuit as _QC
+                    _pqc = _QC(1); _pqc.h(0); _pqc.measure_all()
+                    probe.run(transpile(_pqc, probe), shots=1).result()
+                except Exception as _gpu_err:
+                    self.io.writeln(f"?GPU NOT AVAILABLE: {_gpu_err}")
+                    self.io.writeln("  Install qiskit-aer-gpu for CUDA support")
+                    return
             self.sim_device = val
             self.io.writeln(f"DEVICE = {self.sim_device}")
         else:
@@ -798,8 +875,8 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
         if not has_measure and self.sim_method not in ('unitary', 'superop'):
             try:
                 qc_sv.save_statevector()
-                sv_backend = AerSimulator(method='statevector')
-                sv_qc = transpile(qc_sv, sv_backend)
+                sv_backend = self._make_backend('statevector')
+                sv_qc = transpile(qc_sv, sv_backend, optimization_level=self._transpile_opt_level)
                 sv_result = sv_backend.run(sv_qc).result()
                 self.last_sv = np.array(sv_result.get_statevector())
                 # Extract SAVE_EXPECT / SAVE_PROBS / SAVE_AMPS results
@@ -842,41 +919,16 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
                     method = 'matrix_product_state'
                 elif not self._noise_model and self._is_clifford(qc):
                     method = 'stabilizer'
+            # Backend construction is centralized in _make_backend
+            # but we still need backend_opts for the fallback paths below
             backend_opts = {'method': method}
             if self.sim_device == 'GPU':
                 backend_opts['device'] = 'GPU'
-            # Build per-qubit noise model from memory map if configured
             noise = self._noise_model
             if not noise and hasattr(self, '_qubit_noise') and self._qubit_noise:
-                try:
-                    from qiskit_aer.noise import (
-                        NoiseModel, depolarizing_error, amplitude_damping_error,
-                        phase_damping_error,
-                    )
-                    nm = NoiseModel()
-                    _type_map = {1: depolarizing_error, 2: amplitude_damping_error,
-                                 3: phase_damping_error}
-                    for q, (ntype, nparam) in self._qubit_noise.items():
-                        if ntype in _type_map and nparam > 0 and q < self.num_qubits:
-                            if ntype == 1:
-                                err = _type_map[ntype](nparam, 1)
-                            else:
-                                err = _type_map[ntype](nparam)
-                            nm.add_quantum_error(err, ['h', 'x', 'y', 'z', 'rx', 'ry', 'rz', 'p', 'u', 'id', 's', 't', 'sdg', 'tdg', 'sx'], [q])
-                    noise = nm
-                except ImportError:
-                    pass
+                noise = self._build_qubit_noise()
             if noise:
                 backend_opts['noise_model'] = noise
-            # Performance tuning from memory-mapped config
-            if hasattr(self, '_fusion_enable'):
-                backend_opts['fusion_enable'] = self._fusion_enable
-            if hasattr(self, '_mps_truncation'):
-                backend_opts['matrix_product_state_truncation_threshold'] = self._mps_truncation
-            if hasattr(self, '_sv_parallel_threshold'):
-                backend_opts['statevector_parallel_threshold'] = self._sv_parallel_threshold
-            if hasattr(self, '_es_approx_error'):
-                backend_opts['extended_stabilizer_approximation_error'] = self._es_approx_error
             # Content-based noise key: use str repr instead of id() so
             # equivalent noise models share the cache.
             _noise_key = str(self._noise_model) if self._noise_model else None
@@ -893,7 +945,7 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
                 qc_t, backend = self._circuit_cache
             else:
                 backend = AerSimulator(**backend_opts)
-                qc_t = transpile(qc, backend)
+                qc_t = transpile(qc, backend, optimization_level=self._transpile_opt_level)
                 self._circuit_cache_key = cache_key
                 self._circuit_cache = (qc_t, backend)
             try:
@@ -903,7 +955,17 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
                 return
             except Exception as _sim_err:
                 _err_msg = str(_sim_err).lower()
-                if 'stabilizer' in _err_msg or 'invalid parameters' in _err_msg:
+                if 'gpu' in _err_msg and 'not supported' in _err_msg:
+                    self.io.writeln(f"?GPU EXECUTION FAILED: {_sim_err}")
+                    self.io.writeln("  Falling back to CPU")
+                    self.sim_device = 'CPU'
+                    self._circuit_cache_key = None
+                    self._circuit_cache = None
+                    backend_opts.pop('device', None)
+                    backend = AerSimulator(**backend_opts)
+                    qc_t = transpile(qc, backend, optimization_level=self._transpile_opt_level)
+                    result = backend.run(qc_t, shots=self.shots).result()
+                elif 'stabilizer' in _err_msg or 'invalid parameters' in _err_msg:
                     self._circuit_cache_key = None
                     self._circuit_cache = None
                     sv_opts = {k: v for k, v in backend_opts.items()
@@ -911,7 +973,7 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
                     sv_opts['method'] = 'statevector'
                     self.io.writeln(f"  (stabilizer failed — falling back to statevector)")
                     backend = AerSimulator(**sv_opts)
-                    qc_t = transpile(qc, backend)
+                    qc_t = transpile(qc, backend, optimization_level=self._transpile_opt_level)
                     result = backend.run(qc_t, shots=self.shots).result()
                     # Validate fallback produced usable counts
                     if has_measure:
@@ -948,7 +1010,7 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
                     sv_opts = {k: v for k, v in backend_opts.items() if k != 'method'}
                     sv_opts['method'] = 'statevector'
                     sv_backend = AerSimulator(**sv_opts)
-                    sv_qc = transpile(qc, sv_backend)
+                    sv_qc = transpile(qc, sv_backend, optimization_level=self._transpile_opt_level)
                     result = sv_backend.run(sv_qc, shots=self.shots).result()
                     self.last_counts = dict(result.get_counts())
             # Extract save instruction results into BASIC variables
@@ -975,8 +1037,8 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
         if method not in ('unitary', 'superop'):
             try:
                 qc_sv.save_statevector()
-                sv_backend = AerSimulator(method='statevector')
-                sv_result = sv_backend.run(transpile(qc_sv, sv_backend)).result()
+                sv_backend = self._make_backend('statevector')
+                sv_result = sv_backend.run(transpile(qc_sv, sv_backend, optimization_level=self._transpile_opt_level)).result()
                 self.last_sv = np.array(sv_result.get_statevector())
             except Exception:
                 self.last_sv = None
@@ -1113,8 +1175,8 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
             try:
                 qc_tmp = qc.copy()
                 qc_tmp.save_statevector()
-                sv_b = AerSimulator(method='statevector')
-                sv_r = sv_b.run(transpile(qc_tmp, sv_b)).result()
+                sv_b = self._make_backend('statevector')
+                sv_r = sv_b.run(transpile(qc_tmp, sv_b, optimization_level=self._transpile_opt_level)).result()
                 sv = np.array(sv_r.get_statevector())
                 self._print_sv_compact(sv)
             except Exception:

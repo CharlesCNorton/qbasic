@@ -56,7 +56,7 @@ class SweepMixin:
                 qc, has_measure = self.build_circuit()
                 if has_measure:
                     qc.measure_all()
-                result = backend.run(transpile(qc, backend), shots=self.shots).result()
+                result = backend.run(transpile(qc, backend, optimization_level=self._transpile_opt_level), shots=self.shots).result()
                 counts = dict(result.get_counts())
                 ranked = sorted(counts.items(), key=lambda x: -x[1])
                 top = ranked[0]

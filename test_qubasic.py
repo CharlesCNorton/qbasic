@@ -402,8 +402,13 @@ class TestCommands(unittest.TestCase):
     def test_method(self):
         capture(self.t.cmd_method, 'statevector')
         self.assertEqual(self.t.sim_method, 'statevector')
-        capture(self.t.cmd_method, 'GPU')
-        self.assertEqual(self.t.sim_device, 'GPU')
+        # GPU probe may fail on systems without CUDA — verify it either
+        # sets the device or prints an error, but does not crash.
+        _, out = capture(self.t.cmd_method, 'GPU')
+        if 'NOT AVAILABLE' in out:
+            self.assertEqual(self.t.sim_device, 'CPU')
+        else:
+            self.assertEqual(self.t.sim_device, 'GPU')
 
     def test_variable_substitution(self):
         self.assertIn('PI', self.t._substitute_vars('RX PI, 0', {}))

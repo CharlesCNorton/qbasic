@@ -47,6 +47,7 @@ class MockAerSimulator:
 
     def __init__(self, **kwargs):
         self._method = kwargs.get('method', 'automatic')
+        self.num_qubits = None  # unlimited — satisfies transpiler check
 
     def run(self, qc, shots=1024, **kwargs):
         n = qc.num_qubits if hasattr(qc, 'num_qubits') else 2
@@ -64,3 +65,4 @@ def patch_aer(monkeypatch):
     monkeypatch.setattr('qubasic_core.analysis.transpile', lambda qc, backend, **kw: qc)
     monkeypatch.setattr('qubasic_core.sweep.AerSimulator', MockAerSimulator)
     monkeypatch.setattr('qubasic_core.sweep.transpile', lambda qc, backend, **kw: qc)
+    monkeypatch.setattr('qubasic_core.executor.transpile', lambda qc, backend, **kw: qc)

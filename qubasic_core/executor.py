@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from qiskit import QuantumCircuit, transpile
-from qiskit_aer import AerSimulator
 
 from qubasic_core.engine import (
     GATE_TABLE, GATE_ALIASES,
@@ -624,7 +623,7 @@ class ExecutorMixin:
                               run_vars=dict(self.variables), qc=qc)
         self._exec_line(line, ctx=imm_ctx)
         qc.save_statevector()
-        backend = AerSimulator(method='statevector')
+        backend = self._make_backend('statevector')
         result = backend.run(transpile(qc, backend)).result()
         sv = np.array(result.get_statevector())
         self.last_sv = sv
