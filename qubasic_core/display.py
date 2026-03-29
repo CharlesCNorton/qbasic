@@ -248,10 +248,12 @@ class DisplayMixin:
 
         # Labels on the sphere
         self.io.writeln(f"  Qubit {qubit}  ({x:.3f}, {y:.3f}, {z:.3f})  {label}")
-        self.io.writeln(f"{'|0\u27E9':^{W+4}}")
+        _ket0 = '|0\u27E9'
+        _ket1 = '|1\u27E9'
+        self.io.writeln(f"{_ket0:^{W+4}}")
         for row in grid:
             self.io.writeln(f"  {''.join(row)}")
-        self.io.writeln(f"{'|1\u27E9':^{W+4}}")
+        self.io.writeln(f"{_ket1:^{W+4}}")
 
     def _bloch_vector(self, sv, qubit, n_qubits=None):
         """Compute the Bloch vector for a single qubit from the statevector."""
