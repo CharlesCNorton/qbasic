@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1 (2026-03-29)
+
+- Fix f-string backslash escapes that broke import on Python 3.10/3.11
+
 ## 0.3.0 (2026-03-28)
 
 - FUNCTION return value fix, APPLY_CIRCUIT in programs, stabilizer fallback
