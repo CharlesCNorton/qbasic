@@ -387,6 +387,7 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
         'HISTORY': 'cmd_history',
         # Program management
         'CHECKSUM': 'cmd_checksum',
+        'VERSION': 'cmd_version',
         # Classic
         'RESTORE': 'cmd_restore',
     }
@@ -1057,9 +1058,16 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
         self.variables['_GATES'] = n_gates
         self.variables['_TIME'] = dt
 
-        # Display results
+        # Display results with execution metadata
+        _meta_parts = [f"method={method}"]
+        if self.sim_device != 'CPU':
+            _meta_parts.append(f"device={self.sim_device}")
+        if self._noise_model is not None:
+            _noise_tag = f"noise=depol({self._noise_depol_p})" if self._noise_depol_p > 0 else "noise=on"
+            _meta_parts.append(_noise_tag)
+        _meta = ', '.join(_meta_parts)
         self.io.writeln(f"\nRAN {len(self.program)} lines, {self.num_qubits} qubits, "
-                        f"{self.shots} shots in {dt:.2f}s  [depth={depth}, gates={n_gates}]")
+                        f"{self.shots} shots in {dt:.2f}s  [depth={depth}, gates={n_gates}, {_meta}]")
         if method in ('unitary', 'superop'):
             pass  # matrix already displayed above
         elif has_measure and self.last_counts:
@@ -1904,6 +1912,51 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
         all_gates = sorted(g for g in GATE_TABLE if g not in GATE_ALIASES)
         self.io.writeln(f"        ALL COMMANDS: {', '.join(all_cmds)}")
         self.io.writeln(f"        ALL GATES: {', '.join(all_gates)}")
+
+    def cmd_version(self, rest: str = '') -> None:
+        """VERSION — print build ID, simulator versions, and feature flags."""
+        from qubasic_core import __version__
+        import qiskit
+        import qiskit_aer
+        self.io.writeln(f"  QUBASIC {__version__}")
+        self.io.writeln(f"  Qiskit {qiskit.__version__}")
+        self.io.writeln(f"  Qiskit Aer {qiskit_aer.__version__}")
+        try:
+            import numpy as _np
+            self.io.writeln(f"  NumPy {_np.__version__}")
+        except ImportError:
+            pass
+        self.io.writeln(f"  Python {sys.version.split()[0]}")
+        self.io.writeln(f"  Platform {sys.platform}")
+        # Feature flags
+        flags = []
+        # GPU
+        try:
+            _probe = AerSimulator(method='statevector', device='GPU')
+            from qiskit import QuantumCircuit as _QC
+            _pqc = _QC(1); _pqc.h(0); _pqc.measure_all()
+            _probe.run(transpile(_pqc, _probe), shots=1).result()
+            flags.append('GPU')
+        except Exception:
+            pass
+        try:
+            import plotille  # noqa: F401
+            flags.append('charts')
+        except ImportError:
+            pass
+        try:
+            import pyreadline3  # noqa: F401
+            flags.append('readline')
+        except ImportError:
+            try:
+                import readline  # noqa: F401
+                flags.append('readline')
+            except ImportError:
+                pass
+        self.io.writeln(f"  Features: {', '.join(flags) if flags else 'base'}")
+        self.io.writeln(f"  Device: {self.sim_device}  Method: {self.sim_method}")
+        if self._noise_model:
+            self.io.writeln(f"  Noise: active (depol_p={self._noise_depol_p})")
 
     # ── Banner ────────────────────────────────────────────────────────
 
