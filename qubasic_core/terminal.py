@@ -282,6 +282,32 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
             return 0
         return 1
 
+    @property
+    def _active_sv(self) -> 'np.ndarray | None':
+        """Return the current authoritative statevector.
+
+        In LOCC mode, returns the LOCC engine's statevector (joint or
+        register A for split). In standard mode, returns last_sv.
+        Every state-reporting command should use this instead of
+        accessing last_sv directly.
+        """
+        if self.locc_mode and self.locc:
+            if self.locc.joint:
+                return np.ascontiguousarray(self.locc.sv).ravel()
+            # Split mode: return register A by default
+            return np.ascontiguousarray(self.locc.svs.get('A', None)).ravel() \
+                if self.locc.svs.get('A') is not None else None
+        return self.last_sv
+
+    @property
+    def _active_nqubits(self) -> int:
+        """Return the qubit count matching _active_sv."""
+        if self.locc_mode and self.locc:
+            if self.locc.joint:
+                return self.locc.n_total
+            return self.locc.sizes[0]
+        return self.num_qubits
+
     # ── REPL ──────────────────────────────────────────────────────────
 
     def _setup_readline(self) -> None:

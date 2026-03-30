@@ -25,7 +25,8 @@ class AnalysisMixin:
     def cmd_expect(self, rest: str) -> None:
         """EXPECT <pauli> [qubits] — compute expectation value.
         Examples: EXPECT Z 0, EXPECT ZZ 0 1, EXPECT X 0"""
-        if self.last_sv is None:
+        sv = self._active_sv
+        if sv is None:
             self.io.writeln("?NO STATE — RUN first")
             return
         parts = rest.split()
@@ -35,16 +36,16 @@ class AnalysisMixin:
         pauli_str = parts[0].upper()
         qubits = [int(q) for q in parts[1:]] if len(parts) > 1 else list(range(len(pauli_str)))
 
+        n = self._active_nqubits
         try:
             from qiskit.quantum_info import Statevector, SparsePauliOp
-            sv = Statevector(np.ascontiguousarray(self.last_sv).ravel())
-            # Build Pauli string for full system
-            full_pauli = ['I'] * self.num_qubits
+            sv_q = Statevector(np.ascontiguousarray(sv).ravel())
+            full_pauli = ['I'] * n
             for i, p in enumerate(pauli_str):
                 if i < len(qubits):
-                    full_pauli[self.num_qubits - 1 - qubits[i]] = p
+                    full_pauli[n - 1 - qubits[i]] = p
             op = SparsePauliOp(''.join(full_pauli))
-            val = sv.expectation_value(op)
+            val = sv_q.expectation_value(op)
             self.io.writeln(f"  <{pauli_str}> on qubits {qubits} = {val.real:.6f}")
         except Exception as e:
             self.io.writeln(f"?EXPECT ERROR: {e}")
@@ -52,17 +53,18 @@ class AnalysisMixin:
     def cmd_entropy(self, rest: str = '') -> None:
         """ENTROPY [qubits] — entanglement entropy of specified qubits vs rest.
         Examples: ENTROPY 0  |  ENTROPY 0 1  |  ENTROPY (defaults to qubit 0)"""
-        if self.last_sv is None:
+        sv = self._active_sv
+        if sv is None:
             self.io.writeln("?NO STATE — RUN first")
             return
         if rest.strip():
             partition_a = [int(q) for q in rest.replace(',', ' ').split() if q.strip()]
         else:
             partition_a = [0]
-        n = self.num_qubits
+        n = self._active_nqubits
         try:
             from qiskit.quantum_info import Statevector, entropy, partial_trace
-            sv_obj = Statevector(np.ascontiguousarray(self.last_sv).ravel())
+            sv_obj = Statevector(np.ascontiguousarray(sv).ravel())
             keep = partition_a
             rho_a = partial_trace(sv_obj, [q for q in range(n) if q not in keep])
             ent = entropy(rho_a, base=2)
@@ -78,12 +80,13 @@ class AnalysisMixin:
 
     def cmd_density(self) -> None:
         """Show density matrix (or partial trace for small systems)."""
-        if self.last_sv is None:
+        sv = self._active_sv
+        if sv is None:
             self.io.writeln("?NO STATE — RUN first")
             return
-        sv = np.ascontiguousarray(self.last_sv).ravel()
+        sv = np.ascontiguousarray(sv).ravel()
         rho = np.outer(sv, sv.conj())
-        n = self.num_qubits
+        n = self._active_nqubits
         dim = 2**n
         if dim > 16:
             self.io.writeln(f"  Density matrix: {dim}x{dim} (too large to display)")

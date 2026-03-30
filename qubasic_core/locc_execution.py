@@ -41,6 +41,8 @@ class LOCCExecutionMixin:
             self._locc_run_with_send(sorted_lines, has_measure)
         else:
             self._locc_run_vectorized(sorted_lines, has_measure)
+        # Sync last_sv from LOCC engine so EXPECT/DENSITY/BLOCH work
+        self.last_sv = self._active_sv
 
     def _locc_run_with_send(self, sorted_lines, has_measure):
         """LOCC execution with SEND — prefix/suffix split optimization.
