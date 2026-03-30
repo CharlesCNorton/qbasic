@@ -415,6 +415,7 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
         'CHECKSUM': 'cmd_checksum',
         'VERSION': 'cmd_version',
         'SEED': 'cmd_seed',
+        'PROBE': 'cmd_probe',
         # Classic
         'RESTORE': 'cmd_restore',
     }
@@ -534,8 +535,36 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
             methods = ['automatic', 'statevector', 'density_matrix',
                        'stabilizer', 'matrix_product_state', 'extended_stabilizer',
                        'unitary', 'superop']
-            self.io.writeln(f"  methods: {', '.join(methods)}")
-            self.io.writeln(f"  devices: CPU, GPU")
+            # Probe each method for actual availability
+            from qiskit import QuantumCircuit as _QC
+            import logging as _logging
+            _pqc_m = _QC(1); _pqc_m.h(0); _pqc_m.measure_all()
+            _pqc_u = _QC(1); _pqc_u.h(0)  # no measure for unitary/superop
+            _aer_log = _logging.getLogger('qiskit_aer')
+            _old_level = _aer_log.level
+            _aer_log.setLevel(_logging.CRITICAL)
+            avail = []
+            for m in methods:
+                try:
+                    _b = AerSimulator(method=m)
+                    _probe_qc = _pqc_u if m in ('unitary', 'superop') else _pqc_m
+                    _b.run(transpile(_probe_qc, _b), shots=1).result()
+                    avail.append(m)
+                except Exception:
+                    avail.append(f"{m} (unavailable)")
+            _aer_log.setLevel(_old_level)
+            self.io.writeln(f"  methods: {', '.join(avail)}")
+            # GPU probe
+            gpu_ok = False
+            try:
+                _gb = AerSimulator(method='statevector', device='GPU')
+                _gb.run(transpile(_pqc, _gb), shots=1).result()
+                gpu_ok = True
+            except Exception:
+                pass
+            self.io.writeln(f"  devices: CPU{', GPU' if gpu_ok else ''}")
+            if self._noise_model:
+                self.io.writeln(f"  noise: active")
             return
         val = rest.strip().upper()
         if val in ('GPU', 'CPU'):
@@ -1951,6 +1980,84 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
         all_gates = sorted(g for g in GATE_TABLE if g not in GATE_ALIASES)
         self.io.writeln(f"        ALL COMMANDS: {', '.join(all_cmds)}")
         self.io.writeln(f"        ALL GATES: {', '.join(all_gates)}")
+
+    def cmd_probe(self, rest: str = '') -> None:
+        """PROBE — exercise CPU, noise, LOCC, and conditional control end to end."""
+        results = []
+        t0 = time.time()
+
+        # 1. CPU statevector: Bell state
+        self.cmd_new(silent=True)
+        self.num_qubits = 2
+        self.shots = 100
+        self.process('10 H 0', track_undo=False)
+        self.process('20 CX 0,1', track_undo=False)
+        self.process('30 MEASURE', track_undo=False)
+        self._noise_model = None
+        self._noise_depol_p = 0.0
+        self.sim_device = 'CPU'
+        self.cmd_run()
+        bell_ok = self.last_counts and set(self.last_counts.keys()) <= {'00', '11'}
+        results.append(('CPU Bell', bell_ok))
+
+        # 2. Noise: depolarizing on single qubit
+        self.cmd_new(silent=True)
+        self.num_qubits = 1
+        self.shots = 200
+        self.cmd_noise('depolarizing 0.3')
+        self.process('10 X 0', track_undo=False)
+        self.process('20 MEASURE', track_undo=False)
+        self.cmd_run()
+        noise_ok = self.last_counts and '0' in self.last_counts
+        results.append(('Noise depol', noise_ok))
+        self.cmd_noise('off')
+
+        # 3. LOCC JOINT: Bell share
+        self.cmd_new(silent=True)
+        self.cmd_locc('JOINT 1 1')
+        self.shots = 100
+        self.process('10 SHARE A 0, B 0', track_undo=False)
+        self.process('20 MEASURE', track_undo=False)
+        self.cmd_run()
+        locc_ok = self.last_counts and all(
+            s.split('|')[0] == s.split('|')[1]
+            for s in self.last_counts if '|' in s)
+        results.append(('LOCC JOINT', locc_ok))
+
+        # 4. Conditional feedforward: SEND + IF
+        self.cmd_new(silent=True)
+        self.cmd_locc('JOINT 2 2')
+        self.shots = 100
+        self.process('10 @A H 0', track_undo=False)
+        self.process('20 SEND A 0 -> m', track_undo=False)
+        self.process('30 IF m THEN @B X 0', track_undo=False)
+        self.process('40 MEASURE', track_undo=False)
+        self.cmd_run()
+        cond_ok = self.last_counts is not None and len(self.last_counts) > 0
+        results.append(('Conditional ctrl', cond_ok))
+        self.cmd_locc('OFF')
+
+        # 5. GPU probe (non-fatal)
+        gpu_ok = None
+        try:
+            _b = AerSimulator(method='statevector', device='GPU')
+            from qiskit import QuantumCircuit as _QC
+            _pqc = _QC(1); _pqc.h(0); _pqc.measure_all()
+            _b.run(transpile(_pqc, _b), shots=1).result()
+            gpu_ok = True
+        except Exception:
+            gpu_ok = False
+        results.append(('GPU', gpu_ok))
+
+        dt = time.time() - t0
+        self.io.writeln(f"\n  PROBE results ({dt:.2f}s):")
+        all_pass = True
+        for name, ok in results:
+            status = 'PASS' if ok else ('SKIP' if ok is None else 'FAIL')
+            if not ok and ok is not None:
+                all_pass = False
+            self.io.writeln(f"    {name:20s} {status}")
+        self.io.writeln(f"\n  {'ALL PASSED' if all_pass else 'SOME FAILED'}")
 
     def cmd_seed(self, rest: str) -> None:
         """SEED <n> — set deterministic random seed for reproducible results.
