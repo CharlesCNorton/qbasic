@@ -12,44 +12,28 @@ from typing import Any
 
 
 def _replace_dollar_outside_strings(expr_str: str) -> str:
-    """Apply $->_S_ replacement only outside quoted string literals."""
-    result: list[str] = []
+    """Apply $->_S_ replacement only outside quoted string literals.
+
+    Single pass: splits on quote boundaries, substitutes only in
+    unquoted segments.
+    """
+    parts: list[str] = []
     i = 0
     n = len(expr_str)
     while i < n:
         ch = expr_str[i]
         if ch in ('"', "'"):
-            # Copy the entire quoted region verbatim
             quote = ch
             j = i + 1
             while j < n and expr_str[j] != quote:
                 j += 1
-            # Include closing quote (or end of string if missing)
-            result.append(expr_str[i:j + 1])
+            parts.append(expr_str[i:j + 1])
             i = j + 1
         else:
-            result.append(ch)
-            i += 1
-    text = ''.join(result)
-    # Now apply the substitution only to non-quoted segments
-    parts: list[str] = []
-    i = 0
-    n = len(text)
-    while i < n:
-        ch = text[i]
-        if ch in ('"', "'"):
-            quote = ch
-            j = i + 1
-            while j < n and text[j] != quote:
-                j += 1
-            parts.append(text[i:j + 1])
-            i = j + 1
-        else:
-            # Accumulate non-quoted text
             j = i
-            while j < n and text[j] not in ('"', "'"):
+            while j < n and expr_str[j] not in ('"', "'"):
                 j += 1
-            segment = text[i:j]
+            segment = expr_str[i:j]
             parts.append(re.sub(r'(\w+)\$', r'\1_S_', segment))
             i = j
     return ''.join(parts)

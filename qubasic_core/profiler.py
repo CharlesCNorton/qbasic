@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import os
+import sys
 import time
 from typing import Any
 
@@ -111,10 +113,14 @@ class ProfilerMixin:
         self.io.writeln(f"\nRunning {n} trials...")
         for trial in range(n):
             old_io = self.io
+            old_stdout = sys.stdout
             self.io = _NullIOPort()
+            sys.stdout = open(os.devnull, 'w')
             try:
                 self.cmd_run()
             finally:
+                sys.stdout.close()
+                sys.stdout = old_stdout
                 self.io = old_io
             if self.last_counts:
                 if len(self._stats_runs) >= MAX_STATS_RUNS:

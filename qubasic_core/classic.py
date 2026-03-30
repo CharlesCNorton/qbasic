@@ -217,6 +217,9 @@ class ClassicMixin:
     # ── DO / LOOP ─────────────────────────────────────────────────────
 
     def _find_matching_loop(self, sorted_lines: list[int], ip: int) -> int:
+        jt = getattr(self, '_jump_table', None)
+        if jt and ip in jt:
+            return jt[ip]
         depth = 1
         scan = ip + 1
         while scan < len(sorted_lines):

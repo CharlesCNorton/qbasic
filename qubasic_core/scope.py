@@ -32,7 +32,6 @@ class Scope:
 
     def __setitem__(self, name: str, value: Any) -> None:
         self._runtime[name] = value
-        self._persistent[name] = value
 
     def keys(self):
         return set(self._persistent.keys()) | set(self._runtime.keys())

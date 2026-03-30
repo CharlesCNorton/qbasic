@@ -10,7 +10,7 @@ class LOCCDisplayMixin:
     self._print_bloch_single(), self.print_histogram(), self.io.
     """
 
-    def _locc_state(self, rest=''):
+    def _locc_state(self, rest: str = '') -> None:
         reg = rest.strip().upper() if rest else ''
         if self.locc.joint:
             if not reg or reg in self.locc.names:
@@ -24,7 +24,7 @@ class LOCCDisplayMixin:
                 self.io.writeln(f"\n  Register {name} ({size} qubits):")
                 self._print_statevector(self.locc.svs[name], size)
 
-    def _locc_bloch(self, rest):
+    def _locc_bloch(self, rest: str) -> None:
         m = re.match(r'([A-Z])\s*(\d*)', rest.strip(), re.IGNORECASE) if rest.strip() else None
         if m and m.group(1):
             reg = m.group(1).upper()
@@ -49,7 +49,7 @@ class LOCCDisplayMixin:
         else:
             self.io.writeln(f"?USAGE: BLOCH <reg> [qubit]  (registers: {', '.join(self.locc.names)})")
 
-    def _locc_display_results(self, per_reg, counts_joint):
+    def _locc_display_results(self, per_reg: dict, counts_joint: dict) -> None:
         """Display per-register and joint histograms."""
         for name in self.locc.names:
             size = self.locc.get_size(name)

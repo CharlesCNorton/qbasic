@@ -24,7 +24,7 @@ class LOCCCommandsMixin:
         """
         return getattr(self, '_noise_depol_p', 0.0)
 
-    def cmd_locc(self, rest):
+    def cmd_locc(self, rest: str) -> None:
         args = rest.upper().split()
         if not args:
             if self.locc_mode:
@@ -86,7 +86,11 @@ class LOCCCommandsMixin:
             self.io.writeln(f"?MAX {LOCC_MAX_REGISTERS} registers (A-Z)")
             return
 
-        sizes = [int(n) for n in nums]
+        try:
+            sizes = [int(n) for n in nums]
+        except ValueError:
+            self.io.writeln("?LOCC register sizes must be integers")
+            return
         total = sum(sizes)
         if joint and total > LOCC_MAX_JOINT_QUBITS:
             self.io.writeln(f"?JOINT mode limited to {LOCC_MAX_JOINT_QUBITS} total qubits (requested {total})")
@@ -130,7 +134,7 @@ class LOCCCommandsMixin:
             self.io.writeln(f"  WARNING: non-depolarizing noise model active but not supported "
                            f"in LOCC numpy path. Only NOISE depolarizing propagates to LOCC.")
 
-    def cmd_send(self, rest):
+    def cmd_send(self, rest: str) -> None:
         if not self.locc_mode:
             self.io.writeln("?SEND requires LOCC mode")
             return
@@ -153,7 +157,7 @@ class LOCCCommandsMixin:
         self.locc.classical[var] = outcome
         self.io.writeln(f"  {reg}[{qubit}] -> {var} = {outcome}")
 
-    def cmd_share(self, rest):
+    def cmd_share(self, rest: str) -> None:
         if not self.locc_mode:
             self.io.writeln("?SHARE requires LOCC mode")
             return
@@ -173,7 +177,7 @@ class LOCCCommandsMixin:
         except RuntimeError as e:
             self.io.writeln(f"?{e}")
 
-    def cmd_loccinfo(self):
+    def cmd_loccinfo(self) -> None:
         """Show LOCC protocol metrics after a run."""
         if not self.locc_mode:
             self.io.writeln("?NOT IN LOCC MODE")

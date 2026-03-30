@@ -8,7 +8,7 @@ class DemoMixin:
     self.shots, self.cmd_new(), self.cmd_run(), self.cmd_list(), self.cmd_locc().
     """
 
-    def cmd_demo(self, name):
+    def cmd_demo(self, name: str) -> None:
         demos = {
             'BELL':        self._demo_bell,
             'GHZ':         self._demo_ghz,

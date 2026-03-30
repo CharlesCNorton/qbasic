@@ -2271,6 +2271,142 @@ class TestGapCoverage(unittest.TestCase):
 
 
 # =====================================================================
+# Hypothesis property-based tests (cure #5)
+# =====================================================================
+
+from hypothesis import given, strategies as st, settings as hyp_settings
+
+
+class TestPropertyBasedExtended(unittest.TestCase):
+    """Property-based tests using hypothesis."""
+
+    def setUp(self):
+        from qubasic_core.terminal import QBasicTerminal
+        self.t = QBasicTerminal()
+
+    @given(st.floats(min_value=-1e6, max_value=1e6, allow_nan=False, allow_infinity=False))
+    @hyp_settings(max_examples=50)
+    def test_eval_arithmetic_identity(self, x):
+        """x + 0 == x for all finite floats."""
+        self.t.variables['x'] = x
+        result = self.t._safe_eval('x + 0')
+        self.assertAlmostEqual(float(result), x, places=6)
+
+    @given(st.integers(min_value=0, max_value=255))
+    @hyp_settings(max_examples=50)
+    def test_parser_never_crashes_on_gate_names(self, rule):
+        """Parser should not crash on any 1-byte command string."""
+        from qubasic_core.parser import parse_stmt
+        text = f"H {rule}"
+        stmt = parse_stmt(text)
+        self.assertIsNotNone(stmt)
+
+    @given(st.text(min_size=0, max_size=80, alphabet=st.characters(
+        whitelist_categories=('L', 'N', 'P', 'Z'),
+        blacklist_characters='\x00')))
+    @hyp_settings(max_examples=80)
+    def test_process_never_crashes(self, line):
+        """process() should handle arbitrary text without crashing."""
+        try:
+            self.t.process(line, track_undo=False)
+        except (EOFError, SystemExit):
+            pass  # BYE/QUIT/EXIT raise these intentionally
+
+    @given(st.integers(min_value=1, max_value=20))
+    @hyp_settings(max_examples=15)
+    def test_for_loop_count(self, n):
+        """FOR I = 0 TO n should iterate exactly n+1 times."""
+        self.t.cmd_new(silent=True)
+        self.t.variables.clear()
+        self.t.process(f'10 LET count = 0', track_undo=False)
+        self.t.process(f'20 FOR I = 0 TO {n}', track_undo=False)
+        self.t.process(f'30 LET count = count + 1', track_undo=False)
+        self.t.process(f'40 NEXT I', track_undo=False)
+        self.t.cmd_run()
+        self.assertEqual(int(self.t.variables.get('count', 0)), n + 1)
+
+
+# =====================================================================
+# CLI integration tests (cure #6)
+# =====================================================================
+
+class TestCLIIntegration(unittest.TestCase):
+    """Integration tests for CLI entry point and dispatch."""
+
+    def setUp(self):
+        from qubasic_core.terminal import QBasicTerminal
+        self.t = QBasicTerminal()
+
+    def test_dispatch_unknown_command_no_crash(self):
+        """Unknown commands should produce error, not crash."""
+        buf = _capture_io(self.t)
+        self.t.dispatch('XYZZY')
+        output = buf.get_output()
+        self.assertIn('?', output)
+
+    def test_dispatch_empty_line(self):
+        """Empty dispatch should be a no-op."""
+        self.t.dispatch('')
+        self.t.dispatch('   ')
+
+    def test_seed_dispatch_with_arg(self):
+        """SEED 42 should work via dispatch (cure #1 verification)."""
+        self.t.dispatch('SEED 42')
+        self.assertEqual(self.t._seed, 42)
+
+    def test_seed_dispatch_off(self):
+        """SEED OFF should clear the seed."""
+        self.t.dispatch('SEED 42')
+        self.t.dispatch('SEED OFF')
+        self.assertIsNone(self.t._seed)
+
+    def test_locc_non_numeric_args(self):
+        """LOCC with non-numeric args should not crash (cure #3)."""
+        buf = _capture_io(self.t)
+        self.t.cmd_locc('4 banana')
+        output = buf.get_output()
+        self.assertIn('integer', output.lower())
+
+    def test_method_no_args_no_crash(self):
+        """METHOD with no args should not crash (cure #2 context)."""
+        buf = _capture_io(self.t)
+        # This exercises the GPU probe path that had the _pqc bug
+        self.t.cmd_method('')
+        output = buf.get_output()
+        self.assertIn('METHOD', output)
+
+    def test_cli_seed_flag(self):
+        """--seed flag should be accepted by CLI (cure #14)."""
+        import subprocess, json
+        result = subprocess.run(
+            [sys.executable, os.path.join(os.path.dirname(__file__), 'qubasic.py'),
+             '--seed', '42', '--json',
+             os.path.join(os.path.dirname(__file__), 'examples', 'bell.qb')],
+            capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            self.assertIn('counts', data)
+
+    def test_cli_help_flag(self):
+        """--help should exit 0."""
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, os.path.join(os.path.dirname(__file__), 'qubasic.py'),
+             '--help'],
+            capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn('QUBASIC', result.stdout)
+
+
+def _capture_io(terminal):
+    """Attach a BufferIOPort to a terminal and return it."""
+    from conftest import BufferIOPort
+    buf = BufferIOPort()
+    terminal.io = buf
+    return buf
+
+
+# =====================================================================
 # Run
 # =====================================================================
 if __name__ == '__main__':

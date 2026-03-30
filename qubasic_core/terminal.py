@@ -423,7 +423,6 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
         # Program management
         'CHECKSUM': 'cmd_checksum',
         'VERSION': 'cmd_version',
-        'SEED': 'cmd_seed',
         'PROBE': 'cmd_probe',
         # Classic
         'RESTORE': 'cmd_restore',
@@ -461,6 +460,7 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
         # Circuit macros
         'CIRCUIT_DEF': 'cmd_circuit_def', 'APPLY_CIRCUIT': 'cmd_apply_circuit',
         'HELP': 'cmd_help', 'CONSISTENCY': 'cmd_consistency',
+        'SEED': 'cmd_seed',
     }
 
     def dispatch(self, line: str) -> None:
@@ -568,7 +568,7 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
             gpu_ok = False
             try:
                 _gb = AerSimulator(method='statevector', device='GPU')
-                _gb.run(transpile(_pqc, _gb), shots=1).result()
+                _gb.run(transpile(_pqc_m, _gb), shots=1).result()
                 gpu_ok = True
             except Exception:
                 pass

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import re
 
-from qubasic_core.engine import (
-    GATE_TABLE, GATE_ALIASES,
+from qubasic_core.gates import GATE_TABLE, GATE_ALIASES
+from qubasic_core.patterns import (
     RE_LET_ARRAY, RE_LET_VAR, RE_PRINT,
     RE_GOTO, RE_GOSUB, RE_FOR, RE_NEXT, RE_WHILE, RE_IF_THEN,
     RE_MEAS, RE_RESET, RE_SEND, RE_SHARE, RE_AT_REG_LINE, RE_AT_REG,

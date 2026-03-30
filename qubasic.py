@@ -53,10 +53,22 @@ def main():
     args = sys.argv[1:]
     quiet = '--quiet' in args or '-q' in args
     json_mode = '--json' in args
+    seed_val = None
     if quiet:
         args = [a for a in args if a not in ('--quiet', '-q')]
     if json_mode:
         args = [a for a in args if a != '--json']
+    # Parse --seed N
+    filtered = []
+    i = 0
+    while i < len(args):
+        if args[i] == '--seed' and i + 1 < len(args):
+            seed_val = int(args[i + 1])
+            i += 2
+        else:
+            filtered.append(args[i])
+            i += 1
+    args = filtered
 
     if any(a in ('-h', '--help') for a in args):
         from qubasic_core import __version__
@@ -67,12 +79,17 @@ def main():
         print("  qubasic script.qb        Run a script file")
         print("  qubasic --quiet script    Suppress banner and progress")
         print("  qubasic --json script     Output results as JSON")
+        print("  qubasic --seed N script   Set random seed for reproducibility")
         print("  qubasic --help            Show this help")
         print()
         print("Type HELP inside the REPL for full command reference.")
         sys.exit(0)
 
     term = QBasicTerminal()
+    if seed_val is not None:
+        import numpy as _np
+        term._seed = seed_val
+        _np.random.seed(seed_val)
 
     if args:
         path = args[0]

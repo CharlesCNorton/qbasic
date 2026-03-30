@@ -27,7 +27,7 @@ class LOCCExecutionMixin:
     self.last_counts, self.io.
     """
 
-    def _locc_run(self):
+    def _locc_run(self) -> None:
         """Execute program in LOCC mode (N registers)."""
         sorted_lines = sorted(self.program.keys())
         if not sorted_lines:
@@ -44,7 +44,7 @@ class LOCCExecutionMixin:
         # Sync last_sv from LOCC engine so EXPECT/DENSITY/BLOCH work
         self.last_sv = self._active_sv
 
-    def _locc_run_with_send(self, sorted_lines, has_measure):
+    def _locc_run_with_send(self, sorted_lines: list[int], has_measure: bool) -> None:
         """LOCC execution with SEND — prefix/suffix split optimization.
 
         Executes the deterministic prefix (before first SEND) once,
@@ -148,7 +148,7 @@ class LOCCExecutionMixin:
             self._locc_display_results(per_reg, counts_joint)
             self.last_counts = counts_joint
 
-    def _locc_run_vectorized(self, sorted_lines, has_measure):
+    def _locc_run_vectorized(self, sorted_lines: list[int], has_measure: bool) -> None:
         """LOCC execution without SEND — single execution, vectorized sampling.
 
         When noise is active, re-executes per shot so that Monte Carlo noise
@@ -314,7 +314,7 @@ class LOCCExecutionMixin:
 
         raise ValueError(f"LOCC mode requires @A/@B prefix, SEND, SHARE, or IF: {stmt}")
 
-    def _locc_try_special(self, reg, stmt, run_vars):
+    def _locc_try_special(self, reg: str, stmt: str, run_vars: dict) -> bool:
         """Handle MEAS/RESET/MEASURE_X/Y/Z/SYNDROME in LOCC mode."""
         from qubasic_core.parser import parse_stmt
         from qubasic_core.statements import MeasStmt, ResetStmt, MeasureBasisStmt, SyndromeStmt
@@ -373,7 +373,7 @@ class LOCCExecutionMixin:
 
         return False
 
-    def _locc_apply_gate(self, reg, gate_stmt):
+    def _locc_apply_gate(self, reg: str, gate_stmt: str) -> None:
         """Parse and apply a gate to a LOCC register via numpy.
 
         Uses LOCCRegBackend for standard gates. CTRL and INV modifiers

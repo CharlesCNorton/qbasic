@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.1 (2026-03-30)
+
+- **Fix SEED dispatch**: moved from no-arg to with-arg dispatch table so `SEED 42` works from the REPL
+- **Fix GPU probe**: `cmd_method` GPU probe used undefined `_pqc` variable; now uses `_pqc_m`
+- **Fix LOCC non-numeric args**: `LOCC 4 banana` no longer crashes with unguarded ValueError
+- **Coverage threshold**: raised CI coverage floor from 60% to 75%
+- **Property-based tests**: 4 new hypothesis tests (arithmetic identity, parser fuzzing, process fuzzing, FOR loop count)
+- **CLI integration tests**: 8 new tests covering dispatch, SEED, LOCC error handling, METHOD probe, --seed flag, --help
+- **Parser imports**: import regexes from patterns.py directly instead of double-indirection through engine.py
+- **Expression simplification**: `_replace_dollar_outside_strings` reduced from two passes to one
+- **Jump table**: pre-compute WHILE/WEND and DO/LOOP ip mappings in `_scan_subs`; `_find_matching_wend` and `_find_matching_loop` use O(1) lookup when available
+- **Scope cleanup**: removed dual-write hack in `Scope.__setitem__`; writes go to `_runtime` only, `_persistent` is read-through fallback
+- **STATS output**: redirect stdout during stats runs to suppress rich console output in non-TTY mode
+- **Copyright year**: LICENSE updated from 2025 to 2026
+- **CLI --seed flag**: `qubasic --seed N script.qb` sets deterministic seed before execution
+- **Type annotations**: added return type annotations to 14 unannotated mixin methods across locc_commands, locc_display, locc_execution, demos
+
 ## 0.4.0 (2026-03-29)
 
 - **Noise correctness**: transpile with optimization_level=0 when noisy so gates survive for noise attachment

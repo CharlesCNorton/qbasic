@@ -166,10 +166,12 @@ class ControlFlowMixin:
     def _find_matching_wend(self, sorted_lines: list[int], ip: int) -> int:
         """Find the ip after the WEND matching the WHILE at ip.
 
-        Scans forward with proper nesting depth tracking. Returns the ip
-        index past the matching WEND. Raises with the WHILE line number
-        for clear diagnostics.
+        Uses pre-computed jump table when available (O(1)), falls back
+        to linear scan with nesting depth tracking.
         """
+        jt = getattr(self, '_jump_table', None)
+        if jt and ip in jt:
+            return jt[ip] + 1
         depth = 1
         scan = ip + 1
         while scan < len(sorted_lines):

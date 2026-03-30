@@ -29,9 +29,12 @@ class SubroutineMixin:
         self._func_call_depth: int = 0
 
     def _scan_subs(self, sorted_lines: list[int]) -> None:
-        """Scan program for SUB and FUNCTION blocks before execution."""
+        """Scan program for SUB/FUNCTION blocks and build jump table."""
         self._sub_defs.clear()
         self._func_defs.clear()
+        self._jump_table: dict[int, int] = {}  # ip -> matching-end ip
+        # Build jump table for WHILE/WEND, DO/LOOP pairs
+        self._build_jump_table(sorted_lines)
         for i, ln in enumerate(sorted_lines):
             stmt = self.program[ln].strip()
             m = RE_SUB.match(stmt)
@@ -47,6 +50,27 @@ class SubroutineMixin:
                 params = [p.strip() for p in m.group(2).split(',')] if m.group(2) else []
                 end_ip = self._find_end_block(sorted_lines, i, 'FUNCTION')
                 self._func_defs[name] = {'params': params, 'start_ip': i + 1, 'end_ip': end_ip}
+
+    def _build_jump_table(self, sorted_lines: list[int]) -> None:
+        """Pre-compute WHILE->WEND and DO->LOOP ip mappings."""
+        while_stack: list[int] = []
+        do_stack: list[int] = []
+        for ip, ln in enumerate(sorted_lines):
+            s = self.program[ln].strip().upper()
+            if s.startswith('WHILE '):
+                while_stack.append(ip)
+            elif s == 'WEND':
+                if while_stack:
+                    w_ip = while_stack.pop()
+                    self._jump_table[w_ip] = ip
+                    self._jump_table[ip] = w_ip
+            elif s.startswith('DO'):
+                do_stack.append(ip)
+            elif s.startswith('LOOP'):
+                if do_stack:
+                    d_ip = do_stack.pop()
+                    self._jump_table[d_ip] = ip
+                    self._jump_table[ip] = d_ip
 
     def _find_end_block(self, sorted_lines: list[int], start_ip: int, kind: str) -> int:
         scan = start_ip + 1
