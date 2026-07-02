@@ -1,0 +1,98 @@
+"""QUBASIC Jupyter kernel — run .qb cells in a notebook.
+
+Install the kernelspec once, then pick "QUBASIC" in Jupyter:
+
+    qubasic --install-kernel
+    jupyter lab
+
+Each cell's lines feed the same QBasicTerminal the REPL uses (numbered lines
+build the program, bare commands execute immediately), so a notebook is an
+interactive session with persistent state. Requires ipykernel (installed with
+`pip install qubasic[jupyter]`).
+"""
+
+from __future__ import annotations
+
+import io
+import sys
+
+
+def _make_kernel_class():
+    from ipykernel.kernelbase import Kernel
+    from qubasic_core import __version__
+    from qubasic_core.terminal import QBasicTerminal
+    from qubasic_core.program_mgmt import ProgramMgmtMixin
+
+    class QubasicKernel(Kernel):
+        implementation = 'qubasic'
+        implementation_version = __version__
+        language = 'qubasic'
+        language_version = __version__
+        language_info = {
+            'name': 'qubasic',
+            'mimetype': 'text/plain',
+            'file_extension': '.qb',
+        }
+        banner = f"QUBASIC {__version__} — Quantum BASIC"
+
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.term = QBasicTerminal()
+            self.term.agent_mode = True   # confine file writes to the cwd
+
+        def do_execute(self, code, silent, store_history=True,
+                       user_expressions=None, allow_stdin=False, **kwargs):
+            buf = io.StringIO()
+            old = sys.stdout
+            sys.stdout = buf
+            status = 'ok'
+            try:
+                lines = [l.rstrip('\r\n') for l in code.split('\n')]
+                ProgramMgmtMixin._load_lines_with_defs(
+                    lines, lambda line: self.term.process(line, track_undo=False))
+            except Exception as e:
+                status = 'error'
+                print(f"?ERROR: {e}")
+            finally:
+                sys.stdout = old
+            out = buf.getvalue()
+            if out and not silent:
+                self.send_response(self.iopub_socket, 'stream',
+                                   {'name': 'stdout', 'text': out})
+            return {'status': status, 'execution_count': self.execution_count,
+                    'payload': [], 'user_expressions': {}}
+
+    return QubasicKernel
+
+
+KERNEL_SPEC = {
+    'argv': [sys.executable, '-m', 'qubasic_core.jupyter_kernel', '-f',
+             '{connection_file}'],
+    'display_name': 'QUBASIC',
+    'language': 'qubasic',
+}
+
+
+def install_kernelspec() -> str:
+    """Write the QUBASIC kernelspec into the user's Jupyter kernels dir."""
+    import json
+    import os
+    import tempfile
+    from jupyter_client.kernelspec import KernelSpecManager
+    with tempfile.TemporaryDirectory() as td:
+        spec_dir = os.path.join(td, 'qubasic')
+        os.mkdir(spec_dir)
+        with open(os.path.join(spec_dir, 'kernel.json'), 'w', encoding='utf-8') as f:
+            json.dump(KERNEL_SPEC, f, indent=2)
+        dest = KernelSpecManager().install_kernel_spec(
+            spec_dir, 'qubasic', user=True)
+    return dest
+
+
+def main():
+    from ipykernel.kernelapp import IPKernelApp
+    IPKernelApp.launch_instance(kernel_class=_make_kernel_class())
+
+
+if __name__ == '__main__':
+    main()

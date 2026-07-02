@@ -80,7 +80,7 @@ RE_LINE_INPUT = re.compile(
     r'LINE\s+INPUT\s+(?:"([^"]*)"\s*,\s*)?(\w+\$?)', re.IGNORECASE)
 RE_OPTION_BASE = re.compile(r'OPTION\s+BASE\s+([01])', re.IGNORECASE)
 RE_IMPORT = re.compile(r'IMPORT\s+"?([^"]+)"?', re.IGNORECASE)
-RE_SAVE_EXPECT = re.compile(r'SAVE_EXPECT\s+(\w+)\s+([\d\s,]+)\s*->\s*(\w+)', re.IGNORECASE)
+RE_SAVE_EXPECT = re.compile(r'SAVE_EXPECT\s+(\w+)((?:[\s,]+\d+)*)\s*->\s*(\w+)', re.IGNORECASE)
 RE_SAVE_PROBS = re.compile(r'SAVE_PROBS\s+([\d\s,]+)\s*->\s*(\w+)', re.IGNORECASE)
 RE_SAVE_AMPS = re.compile(r'SAVE_AMPS\s+([\d\s,]+)\s*->\s*(\w+)', re.IGNORECASE)
 RE_SET_STATE = re.compile(r'SET_STATE\s+(.*)', re.IGNORECASE)

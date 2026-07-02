@@ -156,18 +156,19 @@ class ResourceMixin:
             return
         level = int(rest.strip()) if rest.strip() else 3
         try:
-            from qiskit import transpile
             from qiskit_aer import AerSimulator
             qc, _ = self.build_circuit()
             backend = AerSimulator()
-            kw = dict(self._transpile_kwargs())
-            opt = transpile(qc, backend, optimization_level=level, **kw)
+            opt = self._transpile_routed(qc, backend, level=level)
             self._last_transpiled = opt
             self.io.writeln(f"\n  OPTIMIZE (level {level}):")
             self.io.writeln(f"    before: depth {qc.depth()}, gates {qc.size()}")
             self.io.writeln(f"    after : depth {opt.depth()}, gates {opt.size()}")
             dd = qc.depth() - opt.depth()
-            self.io.writeln(f"    reduced depth by {dd} ({100 * dd / max(1, qc.depth()):.0f}%)")
+            if dd >= 0:
+                self.io.writeln(f"    reduced depth by {dd} ({100 * dd / max(1, qc.depth()):.0f}%)")
+            else:
+                self.io.writeln(f"    increased depth by {-dd} (basis/routing constraints outweigh the gains)")
             self.variables['_OPT_DEPTH'] = opt.depth()
         except Exception as e:
             self.io.writeln(f"?OPTIMIZE ERROR: {e}")

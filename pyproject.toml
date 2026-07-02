@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qubasic"
-version = "0.14.0"
+version = "0.16.0"
 description = "Quantum BASIC Interactive Terminal"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -40,6 +40,9 @@ Issues = "https://github.com/CharlesCNorton/qubasic/issues"
 [project.optional-dependencies]
 charts = ["plotille>=5.0"]
 readline = ["pyreadline3>=3.4; sys_platform == 'win32'"]
+qasm3 = ["qiskit-qasm3-import>=0.4"]
+qec = ["stim>=1.12", "pymatching>=2.1"]
+jupyter = ["ipykernel>=6.0", "jupyter-client>=7.0"]
 
 [project.scripts]
 qubasic = "qubasic_core.cli:main"

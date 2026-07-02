@@ -351,9 +351,19 @@ class QECMixin:
             self.io.writeln("    STEANE      [[7,1,3]] CSS code")
             self.io.writeln("    SHOR        [[9,1,3]] code")
             self.io.writeln("    SURFACE [d] rotated surface code, odd distance d (default 3)")
-            self.io.writeln("  Decoders: optimal lookup (default), union-find (LOGICAL_ERROR_RATE ... UF)")
+            self.io.writeln("    BB [l m]    bivariate-bicycle qLDPC (6 6 -> [[72,12,6]], 12 6 -> [[144,12,12]])")
+            self.io.writeln("  Decoders: optimal lookup (default), union-find (UF), pymatching (MWPM),")
+            self.io.writeln("            BP+OSD (BB codes), stim circuit-level (LOGICAL_ERROR_RATE ... CIRCUIT)")
             return
         parts = arg.split()
+        if parts[0] == 'BB':
+            try:
+                l = int(parts[1]) if len(parts) > 1 else 6
+                m = int(parts[2]) if len(parts) > 2 else 6
+                self._qec_show_bb(l, m)
+            except Exception as e:
+                self.io.writeln(f"?QEC ERROR: {e}")
+            return
         try:
             d = int(parts[1]) if len(parts) > 1 else 3
             code = self._qec_code(parts[0], d)
@@ -374,30 +384,67 @@ class QECMixin:
         self.io.writeln(f"  Valid code (logicals normalize the stabilizer group): {ok}")
 
     def cmd_logical_error_rate(self, rest: str) -> None:
-        """LOGICAL_ERROR_RATE <code> [distance] <p> [trials] — Monte-Carlo logical error rate.
+        """LOGICAL_ERROR_RATE <code> [distance] <p> [trials] [UF|MWPM|CIRCUIT] — logical error rate.
 
-        Injects i.i.d. physical errors at rate p, extracts the syndrome, decodes
-        with the optimal lookup decoder, applies the recovery, and reports the
-        fraction of trials left with a logical error."""
+        Code-capacity Monte Carlo by default (i.i.d. physical errors, decode,
+        count residual logical errors) with the optimal lookup decoder; UF for
+        union-find, MWPM for batched pymatching. CIRCUIT switches to full
+        circuit-level noise: stim syndrome-extraction circuits over d rounds
+        decoded from the detector error model (the trailing count is then
+        shots, default 100000). BB codes decode with the internal BP+OSD."""
         parts = rest.split()
         if len(parts) < 2:
-            self.io.writeln("?USAGE: LOGICAL_ERROR_RATE <code> [distance] <p> [trials]")
+            self.io.writeln("?USAGE: LOGICAL_ERROR_RATE <code> [distance] <p> [trials] [UF|MWPM|CIRCUIT]")
             return
         try:
             name = parts[0]
             idx = 1
             distance = 3
+            _FLAGS = ('UF', 'UNION-FIND', 'MATCHING', 'MWPM', 'CIRCUIT', 'BP')
+            if name.upper() == 'BB':
+                # BB takes l and m instead of a distance.
+                l = m = 6
+                if len(parts) > 3 and parts[1].isdigit() and parts[2].isdigit():
+                    l, m = int(parts[1]), int(parts[2]); idx = 3
+                tail = [t for t in parts[idx:] if t.upper() not in _FLAGS]
+                p = float(self._eval_with_vars(tail[0], {}))
+                if not 0.0 <= p <= 1.0:
+                    raise ValueError(f"p={p} out of range (expected 0..1; "
+                                     f"usage: LOGICAL_ERROR_RATE BB [l m] <p> [trials])")
+                trials = int(tail[1]) if len(tail) > 1 else 1000
+                from qubasic_core.qec2 import _bb_code
+                code = _bb_code(l, m)
+                rng = np.random.default_rng(self._seed)
+                t0 = __import__('time').time()
+                ler = self._qec_bb_rate(code, p, trials, rng)
+                dt = __import__('time').time() - t0
+                self.io.writeln(f"\n  {code['name']} [[{code['n']},{code['k']},"
+                                f"{code['d'] or '?'}]]: physical p={p}, {trials} trials "
+                                f"(BP+OSD decoder, {dt:.1f}s)")
+                self.io.writeln(f"  Logical error rate = {ler:.6f}")
+                self.variables['_LER'] = ler
+                return
             if len(parts) > 2 and parts[1].isdigit() and float(parts[1]) >= 1:
                 distance = int(parts[1]); idx = 2
-            uf = any(t.upper() in ('UF', 'UNION-FIND', 'MATCHING') for t in parts)
-            tail = [t for t in parts[idx:] if t.upper() not in ('UF', 'UNION-FIND', 'MATCHING')]
+            flags = {t.upper() for t in parts if t.upper() in _FLAGS}
+            tail = [t for t in parts[idx:] if t.upper() not in _FLAGS]
             p = float(self._eval_with_vars(tail[0], {}))
+            if 'CIRCUIT' in flags:
+                shots = int(tail[1]) if len(tail) > 1 else 100000
+                rounds = int(tail[2]) if len(tail) > 2 else None
+                self._qec_circuit_level(name, distance, p, shots, rounds)
+                return
             trials = int(tail[1]) if len(tail) > 1 else 20000
             code = self._qec_code(name, distance)
             rng = np.random.default_rng(self._seed)
-            ler = self._logical_error_rate(code, p, trials, rng, uf=uf)
-            self.io.writeln(f"\n  {code['name']}: physical p={p}, {trials} trials"
-                            f"{' (union-find decoder)' if uf else ' (lookup decoder)'}")
+            if 'MWPM' in flags:
+                ler = self._qec_mwpm_rate(code, p, trials, rng)
+                dec = 'pymatching MWPM decoder'
+            else:
+                uf = bool(flags & {'UF', 'UNION-FIND', 'MATCHING'})
+                ler = self._logical_error_rate(code, p, trials, rng, uf=uf)
+                dec = 'union-find decoder' if uf else 'lookup decoder'
+            self.io.writeln(f"\n  {code['name']}: physical p={p}, {trials} trials ({dec})")
             self.io.writeln(f"  Logical error rate = {ler:.6f}")
             self.variables['_LER'] = ler
         except Exception as e:

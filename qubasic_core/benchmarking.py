@@ -51,9 +51,12 @@ class BenchmarkingMixin:
         """XEB [n_qubits] [depth] [trials] — linear cross-entropy benchmarking.
 
         For each random circuit, computes the ideal output distribution, samples
-        it (through the active noise model), and forms the linear XEB fidelity
-        F = 2^n * <p_ideal(sampled)> - 1, averaged over trials. F ~ 1 for an ideal
-        run and decays toward 0 as noise scrambles the output."""
+        it (through the active noise model), and forms the self-normalized
+        linear XEB fidelity F = (2^n <p_ideal(sampled)> - 1)/(2^n sum(p^2) - 1),
+        pooled over trials. The denominator is the numerator's value under
+        perfect sampling, so F = 1 ideal with no finite-dimension bias (the raw
+        estimator tops out at (D-1)/(D+1), only 0.6 at 2 qubits) and F decays
+        toward 0 as noise scrambles the output."""
         from qiskit import transpile
         parts = rest.split()
         n = int(parts[0]) if len(parts) > 0 else min(self.num_qubits, 4)
@@ -62,7 +65,8 @@ class BenchmarkingMixin:
         rng = np.random.default_rng(self._seed)
         backend = self._bench_backend()
         shots = max(500, self.shots)
-        fids = []
+        num_sum = 0.0
+        den_sum = 0.0
         try:
             from qiskit.quantum_info import Statevector
             for _ in range(trials):
@@ -76,8 +80,9 @@ class BenchmarkingMixin:
                 acc = 0.0
                 for bits, c in counts.items():
                     acc += probs[int(bits, 2)] * c
-                fids.append((2 ** n) * (acc / shots) - 1.0)
-            f = float(np.mean(fids))
+                num_sum += (2 ** n) * (acc / shots) - 1.0
+                den_sum += (2 ** n) * float(np.sum(probs ** 2)) - 1.0
+            f = float(num_sum / den_sum) if abs(den_sum) > 1e-12 else 0.0
             self.io.writeln(f"\n  XEB: {n} qubits, depth {depth}, {trials} circuits")
             self.io.writeln(f"  Linear XEB fidelity = {f:.4f}  (1.0 ideal, 0.0 fully scrambled)")
             self.variables['_XEB'] = f
@@ -262,53 +267,87 @@ class BenchmarkingMixin:
     # ── Gate-set-style 1-qubit linear inversion ────────────────────────────
 
     def cmd_gst(self, rest: str = '') -> None:
-        """GST — 1-qubit linear-inversion process estimate of the program's channel.
+        """GST — linear-inversion process estimate of the program's channel (1-2 qubits).
 
-        Prepares an informationally complete set of input states, evolves them
-        through the circuit, and linear-inverts the measured Pauli expectations
-        into the process Pauli Transfer Matrix. With a noise model active the
-        estimate reflects the noisy gate."""
-        if self.num_qubits != 1:
-            self.io.writeln("?GST is implemented for 1 qubit (set QUBITS 1)")
+        Prepares an informationally complete product-fiducial set, evolves each
+        input through the circuit, measures every Pauli-basis setting, and
+        linear-inverts the expectations into the process Pauli Transfer Matrix
+        (4x4 for one qubit, 16x16 for two). With a noise model active the
+        estimate reflects the noisy channel."""
+        n = self.num_qubits
+        if n not in (1, 2):
+            self.io.writeln("?GST is implemented for 1-2 qubits (set QUBITS 1 or 2)")
             return
         if not self.program:
-            self.io.writeln("?NOTHING TO CHARACTERIZE — enter a 1-qubit program")
+            self.io.writeln(f"?NOTHING TO CHARACTERIZE — enter a {n}-qubit program")
             return
+        import itertools as _it
         from qiskit import QuantumCircuit, transpile
-        from qiskit.quantum_info import Statevector
-        # Input fiducials covering the Bloch sphere and the Pauli measurements.
-        preps = {'Z+': [], 'Z-': [('x',)], 'X+': [('h',)], 'Y+': [('h',), ('s',)]}
-        paulis = {'X': [('h',)], 'Y': [('sdg',), ('h',)], 'Z': []}
+        preps1 = {'Z+': [], 'Z-': [('x',)], 'X+': [('h',)], 'Y+': [('h',), ('s',)]}
+        meas1 = {'Z': [], 'X': [('h',)], 'Y': [('sdg',), ('h',)]}
+        # Pauli vectors (I, X, Y, Z components) of the fiducial inputs.
+        sb = {'Z+': (1, 0, 0, 1), 'Z-': (1, 0, 0, -1),
+              'X+': (1, 1, 0, 0), 'Y+': (1, 0, 1, 0)}
         try:
             base, _ = self.build_circuit()
             backend = self._bench_backend()
             shots = max(2000, self.shots)
-            # Estimate <P> for each (prep, pauli) after the gate.
-            exp = {}
-            for pname, pre in preps.items():
-                for mname, post in paulis.items():
-                    qc = QuantumCircuit(1, 1)
-                    for g in pre:
-                        getattr(qc, g[0])(0)
+            prep_names = list(_it.product(preps1, repeat=n))   # index 0 = qubit 0
+            set_names = list(_it.product(meas1, repeat=n))
+            dim = 4 ** n
+            # Pauli index: base-4 digits per qubit (I,X,Y,Z), qubit 0 least
+            # significant. Every sub-Pauli of a setting (I on any subset)
+            # marginalizes out of the same counts.
+            E = np.zeros((len(prep_names), dim))
+            E[:, 0] = 1.0
+            for pi, pn in enumerate(prep_names):
+                for sn in set_names:
+                    qc = QuantumCircuit(n, n)
+                    for q in range(n):
+                        for g in preps1[pn[q]]:
+                            getattr(qc, g[0])(q)
                     qc = qc.compose(base)
-                    for g in post:
-                        getattr(qc, g[0])(0)
-                    qc.measure(0, 0)
+                    for q in range(n):
+                        for g in meas1[sn[q]]:
+                            getattr(qc, g[0])(q)
+                    qc.measure(range(n), range(n))
                     counts = backend.run(transpile(qc, backend), shots=shots).result().get_counts()
-                    p0 = counts.get('0', 0) / sum(counts.values())
-                    exp[(pname, mname)] = 2 * p0 - 1
-            # Bloch vectors of the prepared inputs (rows: I,X,Y,Z components).
-            sb = {'Z+': (0, 0, 1), 'Z-': (0, 0, -1), 'X+': (1, 0, 0), 'Y+': (0, 1, 0)}
-            A = np.array([[1, *sb[p]] for p in preps])  # 4x4 prep matrix in Pauli basis
-            R = np.zeros((4, 4))
-            R[0, 0] = 1.0
-            for mi, mname in enumerate(['X', 'Y', 'Z'], start=1):
-                b = np.array([exp[(p, mname)] for p in preps])
-                R[mi] = np.linalg.lstsq(A, b, rcond=None)[0]
-            self.io.writeln("\n  GST process estimate (Pauli Transfer Matrix, rows I/X/Y/Z):")
-            for i, lab in enumerate('IXYZ'):
-                self.io.writeln(f"    {lab}  " + '  '.join(f"{R[i, j]:+.3f}" for j in range(4)))
-            self.io.writeln(f"  Avg gate fidelity to identity: {(np.trace(R) + 2) / 6:.4f}")
+                    tot = sum(counts.values())
+                    for mask in range(1, 2 ** n):
+                        idx = sum((('X', 'Y', 'Z').index(sn[q]) + 1) * 4 ** q
+                                  for q in range(n) if mask >> q & 1)
+                        acc = 0.0
+                        for bits, c in counts.items():
+                            sgn = 1
+                            for q in range(n):
+                                if mask >> q & 1 and bits[len(bits) - 1 - q] == '1':
+                                    sgn = -sgn
+                            acc += sgn * c
+                        E[pi, idx] = acc / tot
+            # Input matrix S (products of fiducial Pauli vectors, qubit 0 as the
+            # least-significant kron factor); the PTM solves E = S R^T.
+            S = np.zeros((len(prep_names), dim))
+            for pi, pn in enumerate(prep_names):
+                v = np.array([1.0])
+                for q in range(n - 1, -1, -1):
+                    v = np.kron(v, np.array(sb[pn[q]], dtype=float))
+                S[pi] = v
+            R = np.linalg.lstsq(S, E, rcond=None)[0].T
+
+            def _label(idx: int) -> str:
+                return ''.join('IXYZ'[(idx >> (2 * q)) & 3]
+                               for q in range(n - 1, -1, -1))
+            labels = [_label(i) for i in range(dim)]
+            self.io.writeln(f"\n  GST process estimate (Pauli Transfer Matrix, "
+                            f"rows {'/'.join(labels) if n == 1 else 'II..ZZ'}):")
+            if n == 2:
+                self.io.writeln("        " + " ".join(f"{l:>7}" for l in labels))
+            for i in range(dim):
+                self.io.writeln(f"    {labels[i]:>2}  "
+                                + ' '.join(f"{R[i, j]:+.3f}" for j in range(dim)))
+            d = 2 ** n
+            self.io.writeln(f"  Avg gate fidelity to identity: "
+                            f"{(np.trace(R) + d) / (d * d + d):.4f}")
         except Exception as e:
             self.io.writeln(f"?GST ERROR: {e}")
 

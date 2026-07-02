@@ -236,14 +236,15 @@ class LOCCCommandsMixin:
         self.io.writeln(f"  Conditional corrections: {n_ifs}")
         self.io.writeln(f"  Communication rounds: ~{n_sends}")
 
-        # Branch statistics from classical bits
-        if n_sends > 0 and self.locc.classical:
-            bits = [v for v in self.locc.classical.values() if isinstance(v, (int, float))]
-            if bits:
-                n0 = sum(1 for b in bits if b == 0)
-                n1 = sum(1 for b in bits if b == 1)
+        # Branch statistics: totals over every SEND across all shots of the
+        # last run (the classical dict only holds each bit's final value).
+        if n_sends > 0:
+            _log = getattr(self.locc, 'correction_log', [])
+            n0 = sum(1 for e in _log if str(e).rstrip().endswith('=0'))
+            n1 = sum(1 for e in _log if str(e).rstrip().endswith('=1'))
+            if n0 or n1:
                 self.io.writeln(f"  Branch stats: {n0} zeros, {n1} ones "
-                               f"(last run)")
+                               f"(all shots, last run)")
 
         # Correction log (from last run)
         log = getattr(self.locc, 'correction_log', [])

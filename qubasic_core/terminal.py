@@ -67,6 +67,8 @@ from qubasic_core.qol import QoLMixin, did_you_mean, tip_of_the_day, quantum_spi
 from qubasic_core.algorithms import AlgorithmsMixin
 from qubasic_core.dynamics import DynamicsMixin
 from qubasic_core.qec import QECMixin
+from qubasic_core.qec2 import QEC2Mixin
+from qubasic_core.logical import LogicalMixin
 from qubasic_core.benchmarking import BenchmarkingMixin
 from qubasic_core.algos2 import Algorithms2Mixin
 from qubasic_core.pauliprop import PauliPropMixin
@@ -151,7 +153,8 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
                      SweepMixin, MemoryMixin, StringMixin, ScreenMixin, ClassicMixin,
                      SubroutineMixin, DebugMixin, ProgramMgmtMixin, ProfilerMixin,
                      NoiseMixin, StateDisplayMixin, QoLMixin, AlgorithmsMixin,
-                     DynamicsMixin, QECMixin, BenchmarkingMixin, Algorithms2Mixin,
+                     DynamicsMixin, QECMixin, QEC2Mixin, LogicalMixin,
+                     BenchmarkingMixin, Algorithms2Mixin,
                      PauliPropMixin, QuditMixin, BosonicMixin, ResourceMixin):
     # Architecture: QBasicTerminal composes Engine (state) + 20 mixins (behavior).
     #
@@ -249,6 +252,7 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
         self._init_dynamics()
         self._init_qudits()
         self._init_bosonic()
+        self._init_logical()
         # Device model for transpilation (None = unconstrained, all-to-all).
         self._coupling_map: list[list[int]] | None = None
         self._basis_gates: list[str] | None = None
@@ -543,6 +547,7 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
         'CHANNEL': 'cmd_channel',
         'QEC': 'cmd_qec', 'LOGICAL_ERROR_RATE': 'cmd_logical_error_rate',
         'THRESHOLD': 'cmd_threshold', 'DISTILL': 'cmd_distill', 'LATTICE': 'cmd_lattice',
+        'LQUBITS': 'cmd_lqubits',
         'XEB': 'cmd_xeb', 'QVOLUME': 'cmd_qvolume', 'RBINT': 'cmd_rbint',
         'MIRROR': 'cmd_mirror', 'CONCURRENCE': 'cmd_concurrence',
         'NEGATIVITY': 'cmd_negativity',
@@ -619,20 +624,38 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
     # ── Commands ──────────────────────────────────────────────────────
 
     def cmd_qubits(self, rest: str) -> None:
-        """Set or display the number of qubits. Range: 1 to MAX_QUBITS."""
+        """Set or display the number of qubits. The ceiling is per METHOD:
+        statevector 32, stabilizer 4096, MPS/automatic 1024, and so on."""
         if not rest:
             self.io.writeln(f"QUBITS = {self.num_qubits}")
             return
         n = int(rest)
-        if n < 1 or n > MAX_QUBITS:
+        from qubasic_core.engine import METHOD_MAX_QUBITS
+        cap = METHOD_MAX_QUBITS.get(self.sim_method, MAX_QUBITS)
+        if n < 1 or n > cap:
             from qubasic_core.errors import QBasicRangeError
-            raise QBasicRangeError(f"RANGE: 1-{MAX_QUBITS}")
+            hint = ("" if n <= MAX_QUBITS or self.sim_method != 'statevector'
+                    else " (METHOD stabilizer reaches 4096, MPS/automatic 1024)")
+            raise QBasicRangeError(f"RANGE: 1-{cap} for METHOD {self.sim_method}{hint}")
 
         if n != self.num_qubits:
             self._invalidate_run_state()
         self.num_qubits = n
         self.registers.clear()
-        est = _estimate_gb(n)
+        # Memory framing is method-specific: the 2^n estimate only describes
+        # the statevector family.
+        _sv_like = self.sim_method in ('statevector', 'automatic', 'unitary',
+                                       'superop', 'density_matrix')
+        if self.sim_method == 'stabilizer' or (self.sim_method == 'automatic' and n > MAX_QUBITS):
+            tail = ("stabilizer tableau" if self.sim_method == 'stabilizer'
+                    else "automatic: stabilizer for Clifford circuits, MPS otherwise")
+            self.io.writeln(f"{n} QUBITS ALLOCATED  ({tail}; polynomial memory)")
+            return
+        if self.sim_method == 'matrix_product_state':
+            self.io.writeln(f"{n} QUBITS ALLOCATED  (MPS: memory scales with "
+                            f"entanglement, not 2^n)")
+            return
+        est = _estimate_gb(n) if _sv_like else _estimate_gb(min(n, MAX_QUBITS))
         self.io.writeln(f"{n} QUBITS ALLOCATED  (~{est:.1f} GB per instance)")
         ram = _get_ram_gb()
         if ram:
@@ -711,6 +734,13 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
         else:
             self.sim_method = rest.strip().lower()
             self.io.writeln(f"METHOD = {self.sim_method}")
+            from qubasic_core.engine import METHOD_MAX_QUBITS
+            cap = METHOD_MAX_QUBITS.get(self.sim_method, MAX_QUBITS)
+            if self.num_qubits > cap:
+                self.num_qubits = cap
+                self._invalidate_run_state()
+                self.registers.clear()
+                self.io.writeln(f"  (QUBITS clamped to {cap}, this method's ceiling)")
 
     def _transpile_kwargs(self) -> dict:
         """coupling_map / basis_gates kwargs for transpile() (device model)."""
@@ -720,6 +750,19 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
         if self._basis_gates:
             kw['basis_gates'] = self._basis_gates
         return kw
+
+    def _transpile_routed(self, qc, backend, level=None):
+        """transpile() honoring the device model. Passing coupling_map or
+        basis_gates alongside a backend is exactly how the offline device
+        model works, so qiskit's advisory warning about it is silenced."""
+        import warnings
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                'ignore', message=r'Providing `coupling_map`', category=UserWarning)
+            return transpile(
+                qc, backend,
+                optimization_level=self._transpile_opt_level if level is None else level,
+                **self._transpile_kwargs())
 
     def cmd_coupling(self, rest: str) -> None:
         """COUPLING linear|ring|full|OFF|<edges> — constrain 2-qubit connectivity.
@@ -1394,8 +1437,7 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
             qc_t, backend = self._circuit_cache
         else:
             backend = AerSimulator(**backend_opts)
-            qc_t = transpile(qc, backend, optimization_level=self._transpile_opt_level,
-                             **self._transpile_kwargs())
+            qc_t = self._transpile_routed(qc, backend)
             self._circuit_cache_key = cache_key
             self._circuit_cache = (qc_t, backend)
             self._last_transpiled = qc_t
@@ -1413,8 +1455,7 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
                 self._circuit_cache = None
                 backend_opts.pop('device', None)
                 backend = AerSimulator(**backend_opts)
-                qc_t = transpile(qc, backend, optimization_level=self._transpile_opt_level,
-                                 **self._transpile_kwargs())
+                qc_t = self._transpile_routed(qc, backend)
                 return backend.run(qc_t, **self._run_kwargs()).result()
             elif 'stabilizer' in _err_msg or 'invalid parameters' in _err_msg:
                 self._circuit_cache_key = None
@@ -1423,8 +1464,7 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
                 sv_opts['method'] = 'statevector'
                 self.io.writeln("  (stabilizer failed — falling back to statevector)")
                 backend = AerSimulator(**sv_opts)
-                qc_t = transpile(qc, backend, optimization_level=self._transpile_opt_level,
-                                 **self._transpile_kwargs())
+                qc_t = self._transpile_routed(qc, backend)
                 return backend.run(qc_t, **self._run_kwargs()).result()
             raise
 
@@ -1457,7 +1497,10 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
             return
         except Exception as e:
             self.last_circuit = None
-            if self._error_target is not None:
+            # Trapped build-time errors resume inside build_circuit itself; an
+            # exception arriving here with a handler armed means the handler
+            # itself failed, which is fatal (classic BASIC semantics).
+            if self._error_target is not None and not self._in_error_handler:
                 # Build errors are wrapped as "LINE N: <original>"; recover the
                 # failing line and any "ERROR <code>" the program raised so that
                 # ERR/ERL carry the real values instead of defaulting to 1/0.
@@ -1615,6 +1658,8 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
             _basis = f", basis={'+'.join(self._basis_gates)}" if self._basis_gates else ""
             _topo = f", swaps={swaps}" if self._coupling_map else ""
             self.io.writeln(f"  routed onto device: depth={qt.depth()}, gates={qt.size()}{_topo}{_basis}")
+        if getattr(self, '_logical_mode', None):
+            self._logical_trailer()
         if method in ('unitary', 'superop'):
             pass  # matrix already displayed above
         elif has_measure and self.last_counts:
@@ -2313,21 +2358,30 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
         return False
 
     def _try_exec_save_expect(self, stmt: str, qc, run_vars: dict) -> bool:
-        """SAVE_EXPECT <pauli> <qubits> -> <var> — inline expectation value."""
+        """SAVE_EXPECT <pauli> <qubits> -> <var> — inline expectation value.
+
+        Also accepts a declared HAMILTONIAN name with no qubit list
+        (SAVE_EXPECT HM -> e), recording <HM> for VQE cost functions."""
         from qubasic_core.engine import RE_SAVE_EXPECT
         m = RE_SAVE_EXPECT.match(stmt)
         if not m:
             return False
         pauli_str = m.group(1).upper()
-        qubits = [int(q.strip()) for q in m.group(2).split(',') if q.strip()]
+        qubits = [int(q.strip()) for q in m.group(2).replace(',', ' ').split() if q.strip()]
         var = m.group(3)
         try:
             from qiskit.quantum_info import SparsePauliOp
-            full_pauli = ['I'] * self.num_qubits
-            for i, p in enumerate(pauli_str):
-                if i < len(qubits):
-                    full_pauli[self.num_qubits - 1 - qubits[i]] = p
-            op = SparsePauliOp(''.join(full_pauli))
+            if not qubits and pauli_str in getattr(self, '_hamiltonians', {}):
+                op = self._hamiltonians[pauli_str]
+                if op.num_qubits != self.num_qubits:
+                    raise ValueError(f"HAMILTONIAN {pauli_str} is {op.num_qubits}-qubit "
+                                     f"but QUBITS is {self.num_qubits}")
+            else:
+                full_pauli = ['I'] * self.num_qubits
+                for i, p in enumerate(pauli_str):
+                    if i < len(qubits):
+                        full_pauli[self.num_qubits - 1 - qubits[i]] = p
+                op = SparsePauliOp(''.join(full_pauli))
             qc.save_expectation_value(op, list(range(self.num_qubits)), label=f'exp_{var}')
             # Placeholder until the run fills the real value via
             # _extract_save_results. Preserve any prior value instead of
@@ -2833,6 +2887,7 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
                 gpu_str = ""
                 QBasicTerminal._gpu_cache = gpu_str
         info_line = f"Python {platform.python_version()} | Qiskit {qver} | {ram_str}{gpu_str}"
-        config_line = f"{self.num_qubits} qubits | {self.shots} shots | max ~{max_q} qubits"
+        config_line = (f"{self.num_qubits} qubits | {self.shots} shots | "
+                       f"max ~{max_q} statevector, 4096 stabilizer")
         self.io.writeln(BANNER_ART.format(info_line=info_line, config_line=config_line))
 

@@ -284,9 +284,81 @@ class AlgorithmsMixin:
                 f"program set its terms (e.g. SAVE_EXPECT ... -> z0)")
         return float(np.real(complex(val)))
 
+    # ── Parametric compilation ───────────────────────────────────────────
+
+    def _alg_parametric_setup(self, params: list[str], sampling: bool = False):
+        """Compile the program ONCE with qiskit Parameters bound to the given
+        variables. Per-evaluation cost then binds values into the cached,
+        already-transpiled circuit instead of rebuilding and retranspiling —
+        an order of magnitude on variational loops.
+
+        Returns an evaluation context, or None when the program is not
+        parameter-compatible (nonlinear expressions the symbolic path cannot
+        carry, feedforward bits, LOCC mode, or the wrong measure/no-measure
+        mode for the caller), in which case callers fall back to rebuild.
+        """
+        if getattr(self, 'locc_mode', False):
+            return None
+        from qiskit.circuit import Parameter
+        saved = {p: self.variables.get(p) for p in params}
+        pobjs = {p: Parameter(p) for p in params}
+        old_io = self.io
+        try:
+            for p in params:
+                self.variables[p] = pobjs[p]
+            self.io = _NullIO()
+            try:
+                qc, has_measure = self.build_circuit()
+            finally:
+                self.io = old_io
+            if getattr(self, '_classical_bits', None):
+                return None
+            if sampling != bool(has_measure):
+                return None
+            if not qc.parameters:
+                return None
+            if sampling:
+                qc = qc.copy()
+                qc.measure_all()
+            from qiskit_aer import AerSimulator
+            method = 'statevector' if self.sim_method == 'automatic' else self.sim_method
+            backend = AerSimulator(**self._build_backend_opts(method))
+            qc_t = self._transpile_routed(qc, backend)
+            pmap = {p: pobjs[p] for p in params if pobjs[p] in qc_t.parameters}
+            if not pmap:
+                return None
+            noisy = bool(self._noise_model or getattr(self, '_qubit_noise', None))
+            shots = self.shots if (sampling or noisy) else 1
+            return {'qc': qc_t, 'backend': backend, 'pmap': pmap, 'shots': shots}
+        except Exception:
+            return None
+        finally:
+            self.io = old_io
+            for p, v in saved.items():
+                if v is None:
+                    self.variables.pop(p, None)
+                else:
+                    self.variables[p] = v
+
+    def _alg_eval_cost_parametric(self, ctx: dict, params: list[str], vec,
+                                  cost_expr: str) -> float:
+        """Bind values into the precompiled circuit, run, evaluate the cost."""
+        binding = {ctx['pmap'][p]: float(v) for p, v in zip(params, vec)
+                   if p in ctx['pmap']}
+        bound = ctx['qc'].assign_parameters(binding)
+        kw: dict = {'shots': ctx['shots']}
+        if self._seed is not None:
+            kw['seed_simulator'] = self._seed
+        result = ctx['backend'].run(bound, **kw).result()
+        for name, val in zip(params, vec):
+            self.variables[name] = float(val)
+        self._extract_save_results(result)
+        val = self._safe_eval(cost_expr)
+        return float(np.real(complex(val)))
+
     @staticmethod
     def _parse_opt_args(rest: str):
-        """Parse 'v1, v2 -> <cost expr> [ITERS n] [STEP s]'.
+        """Parse 'v1, v2 -> <cost expr> [ITERS n] [STEP s] [METHOD NM|SPSA|GRAD]'.
 
         Returns (params, cost_expr, opts). The cost may be any expression in the
         variables the program sets, not just a single name.
@@ -305,6 +377,10 @@ class AlgorithmsMixin:
         if sm:
             opts['step'] = float(sm.group(1))
             tail = tail[:sm.start()] + ' ' + tail[sm.end():]
+        mm = re.search(r'\s+METHOD\s+([A-Za-z-]+)\s*', tail, re.IGNORECASE)
+        if mm:
+            opts['method'] = mm.group(1).upper()
+            tail = tail[:mm.start()] + ' ' + tail[mm.end():]
         cost_expr = tail.strip()
         if not cost_expr:
             return None
@@ -353,6 +429,60 @@ class AlgorithmsMixin:
         order = sorted(range(n + 1), key=lambda k: fvals[k])
         return simplex[order[0]], fvals[order[0]]
 
+    def _spsa(self, f, x0: list[float], iters: int, step: float):
+        """Simultaneous-perturbation stochastic approximation (Spall gains).
+
+        Two cost evaluations per iteration regardless of dimension, robust to
+        shot noise — the standard optimizer for noisy VQE landscapes."""
+        rng = np.random.default_rng(self._seed)
+        x = np.array([float(v) for v in x0])
+        A = max(1.0, iters / 10.0)
+        alpha, gamma, c0 = 0.602, 0.101, 0.1
+        best_x, best_f = x.copy(), float('inf')
+        for k in range(iters):
+            ak = step / (k + 1 + A) ** alpha
+            ck = c0 / (k + 1) ** gamma
+            delta = rng.choice([-1.0, 1.0], size=x.size)
+            fp = f(list(x + ck * delta))
+            fm = f(list(x - ck * delta))
+            for cand_x, cand_f in ((x + ck * delta, fp), (x - ck * delta, fm)):
+                if cand_f < best_f:
+                    best_x, best_f = cand_x.copy(), cand_f
+            ghat = (fp - fm) / (2.0 * ck) * delta
+            x = x - ak * ghat
+        f_final = f(list(x))
+        if f_final <= best_f:
+            return list(x), f_final
+        return list(best_x), best_f
+
+    def _grad_descent(self, f, x0: list[float], iters: int, step: float):
+        """Gradient descent via the parameter-shift rule (pi/2 shifts).
+
+        Exact gradients for costs built from standard rotation gates; the
+        learning rate adapts (grow on improvement, halve on overshoot)."""
+        x = np.array([float(v) for v in x0])
+        shift = np.pi / 2.0
+        fx = f(list(x))
+        lr = step
+        for _ in range(iters):
+            g = np.zeros_like(x)
+            for i in range(x.size):
+                xp = x.copy(); xp[i] += shift
+                xm = x.copy(); xm[i] -= shift
+                g[i] = (f(list(xp)) - f(list(xm))) / 2.0
+            if float(np.linalg.norm(g)) < 1e-7:
+                break
+            xn = x - lr * g
+            fn = f(list(xn))
+            if fn <= fx:
+                x, fx = xn, fn
+                lr *= 1.1
+            else:
+                lr *= 0.5
+                if lr < 1e-6:
+                    break
+        return list(x), fx
+
     def cmd_minimize(self, rest: str) -> None:
         """MINIMIZE v1[, v2 ...] -> cost [ITERS n] [STEP s].
 
@@ -366,7 +496,7 @@ class AlgorithmsMixin:
             return
         parsed = self._parse_opt_args(rest)
         if not parsed:
-            self.io.writeln("?USAGE: MINIMIZE <var>[, <var> ...] -> <cost> [ITERS n] [STEP s]")
+            self.io.writeln("?USAGE: MINIMIZE <var>[, <var> ...] -> <cost> [ITERS n] [STEP s] [METHOD NM|SPSA|GRAD]")
             return
         params, cost_expr, opts = parsed
         if not params:
@@ -374,22 +504,39 @@ class AlgorithmsMixin:
             return
         iters = opts.get('iters', 100)
         step = opts.get('step', 0.5)
+        opt_name = opts.get('method', 'NM')
+        optimizer = {'NM': self._nelder_mead, 'NELDER-MEAD': self._nelder_mead,
+                     'SPSA': self._spsa,
+                     'GRAD': self._grad_descent, 'GD': self._grad_descent}.get(opt_name)
+        if optimizer is None:
+            self.io.writeln(f"?UNKNOWN OPTIMIZER '{opt_name}' (use NM, SPSA, or GRAD)")
+            return
         x0 = [float(self.variables.get(p, 0.0)) for p in params]
         evals = [0]
+        # Compile once with bound Parameters when the ansatz permits; every
+        # evaluation then re-binds instead of rebuilding and retranspiling.
+        ctx = self._alg_parametric_setup(params)
 
-        def f(vec):
-            evals[0] += 1
-            return self._alg_eval_cost(params, vec, cost_expr)
+        if ctx is not None:
+            def f(vec):
+                evals[0] += 1
+                return self._alg_eval_cost_parametric(ctx, params, vec, cost_expr)
+        else:
+            def f(vec):
+                evals[0] += 1
+                return self._alg_eval_cost(params, vec, cost_expr)
 
         try:
-            best, fval = self._nelder_mead(f, x0, iters, step)
+            best, fval = optimizer(f, x0, iters, step)
         except Exception as e:
             self.io.writeln(f"?MINIMIZE ERROR: {e}")
             return
         for name, val in zip(params, best):
             self.variables[name] = float(val)
         self.variables['_COST'] = float(fval)
-        self.io.writeln(f"\n  MINIMIZE converged ({evals[0]} evaluations):")
+        _how = f"{evals[0]} evaluations, {opt_name.lower()}" \
+            + (", parametric compile" if ctx is not None else "")
+        self.io.writeln(f"\n  MINIMIZE converged ({_how}):")
         for name, val in zip(params, best):
             self.io.writeln(f"    {name} = {val:.6f}")
         self.io.writeln(f"    cost ({cost_expr}) = {fval:.6f}")
@@ -411,13 +558,18 @@ class AlgorithmsMixin:
         params, cost_expr, _ = parsed
         base = [float(self.variables.get(p, 0.0)) for p in params]
         shift = np.pi / 2
+        ctx = self._alg_parametric_setup(params)
+        if ctx is not None:
+            eval_cost = lambda vec: self._alg_eval_cost_parametric(ctx, params, vec, cost_expr)
+        else:
+            eval_cost = lambda vec: self._alg_eval_cost(params, vec, cost_expr)
         self.io.writeln(f"\n  Parameter-shift gradient of {cost_expr}:")
         grad = {}
         for i, name in enumerate(params):
             plus = list(base); plus[i] += shift
             minus = list(base); minus[i] -= shift
-            fp = self._alg_eval_cost(params, plus, cost_expr)
-            fm = self._alg_eval_cost(params, minus, cost_expr)
+            fp = eval_cost(plus)
+            fm = eval_cost(minus)
             g = (fp - fm) / 2.0
             grad[name] = g
             self.io.writeln(f"    d/d({name}) = {g:+.6f}")

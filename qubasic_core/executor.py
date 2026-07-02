@@ -145,6 +145,11 @@ class ExecutorMixin:
         # not just literal top-level MEASURE lines.
         has_measure = self._program_has_measure(ctx.sorted_lines)
         self._on_measure_fired = False
+        # Error trapping arms when this run executes ON ERROR GOTO, never from
+        # a previous run's state.
+        self._error_target = None
+        self._in_error_handler = False
+        handler_lines_run = 0
 
         while ctx.ip < len(ctx.sorted_lines):
             ctx.iteration_count += 1
@@ -153,6 +158,16 @@ class ExecutorMixin:
             line_num = ctx.sorted_lines[ctx.ip]
             stmt = self.program[line_num].strip()
             parsed = self._get_parsed(line_num)
+
+            # Per-activation budget for ON ERROR handlers (RESUME resets it via
+            # _in_error_handler), so a handler that never resumes cannot spin.
+            if self._in_error_handler:
+                handler_lines_run += 1
+                if handler_lines_run > 200:
+                    self.io.writeln("?ERROR HANDLER LIMIT (200 lines)")
+                    break
+            else:
+                handler_lines_run = 0
 
             # Debug instrumentation — each is a no-op unless explicitly enabled.
             if self._trace_mode:
@@ -193,11 +208,19 @@ class ExecutorMixin:
             try:
                 result = self._exec_line(stmt, parsed=parsed, ctx=ctx)
             except QBasicBuildError as e:
-                raise QBasicBuildError(
-                    f"LINE {line_num}: {e}"
-                ) from None
+                _handler_ip = self._handle_error(e, line_num, ctx.sorted_lines)
+                if _handler_ip is None:
+                    raise QBasicBuildError(
+                        f"LINE {line_num}: {e}"
+                    ) from None
+                ctx.ip = _handler_ip
+                continue
             except Exception as e:
-                raise RuntimeError(f"LINE {line_num}: {e}") from None
+                _handler_ip = self._handle_error(e, line_num, ctx.sorted_lines)
+                if _handler_ip is None:
+                    raise RuntimeError(f"LINE {line_num}: {e}") from None
+                ctx.ip = _handler_ip
+                continue
             finally:
                 if hasattr(self, '_profile_line_end'):
                     self._profile_line_end(line_num)

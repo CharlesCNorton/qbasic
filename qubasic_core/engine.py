@@ -35,6 +35,20 @@ from qubasic_core.patterns import (
 # ═══════════════════════════════════════════════════════════════════════
 
 MAX_QUBITS = 32
+# Per-method qubit ceilings. The 32-qubit wall is a statevector memory limit
+# only: the stabilizer tableau is polynomial (thousands of qubits), MPS is
+# bounded by entanglement rather than width, and `automatic` resolves to one
+# of those at scale.
+METHOD_MAX_QUBITS = {
+    'automatic': 1024,
+    'statevector': 32,
+    'density_matrix': 16,
+    'stabilizer': 4096,
+    'matrix_product_state': 1024,
+    'extended_stabilizer': 63,
+    'unitary': 16,
+    'superop': 8,
+}
 DEFAULT_QUBITS = 4
 DEFAULT_SHOTS = 1024
 MAX_UNDO_STACK = 50

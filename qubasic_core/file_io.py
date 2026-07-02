@@ -131,7 +131,7 @@ class FileIOMixin:
             prev_qubits = self.num_qubits
             prev_shots = self.shots
             self.cmd_new(silent=True)
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(path, 'r', encoding='utf-8-sig') as f:
                 for line in f:
                     line = line.rstrip('\n\r')
                     if line and not line.startswith('#'):
@@ -173,7 +173,7 @@ class FileIOMixin:
         self._include_depth += 1
         self._include_stack.append(resolved)
         try:
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(path, 'r', encoding='utf-8-sig') as f:
                 for line in f:
                     line = line.rstrip('\n\r')
                     if not line or line.startswith('#'):
@@ -216,7 +216,7 @@ class FileIOMixin:
         # Reserved high range for injected SUB/FUNCTION lines, tracked so SAVE
         # and listings can exclude them.
         _import_line_counter = 900000
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(path, 'r', encoding='utf-8-sig') as f:
             for line in f:
                 line = line.rstrip('\n\r').strip()
                 if not line or line.startswith('#'):
@@ -274,7 +274,7 @@ class FileIOMixin:
         if not os.path.isfile(path):
             self.io.writeln(f"?FILE NOT FOUND: {path}")
             return
-        text = open(path, 'r', encoding='utf-8').read()
+        text = open(path, 'r', encoding='utf-8-sig').read()
         qc = None
         errors = []
         for loader, mod in (('loads', 'qiskit.qasm3'), ('loads', 'qiskit.qasm2')):
@@ -288,6 +288,9 @@ class FileIOMixin:
             self.io.writeln("?LOADQASM: could not parse as OpenQASM 3 or 2")
             for e in errors:
                 self.io.writeln(f"  {e}")
+            if any('qiskit_qasm3_import' in e for e in errors):
+                self.io.writeln("  (3.0 import needs the optional package: "
+                                "pip install qubasic[qasm3])")
             return
         lines, n_unknown, custom = self._circuit_to_qb(qc)
         self.cmd_new(silent=True)
@@ -427,17 +430,29 @@ class FileIOMixin:
             self.io.writeln(f"?DIR ERROR: {e}")
 
     def cmd_export(self, rest: str) -> None:
-        """EXPORT [filename] — export circuit as OpenQASM 3.0."""
+        """EXPORT [filename] — export circuit as OpenQASM (2.0, else 3.0)."""
         if self.last_circuit is None:
             self.io.writeln("?NO CIRCUIT — RUN first")
             return
         qasm = None
+        version = None
         errors = []
+        # QASM 2.0 first so the output round-trips through LOADQASM without
+        # the optional qiskit_qasm3_import package; 3.0 covers dynamic
+        # circuits (if_test) and anything else 2.0 cannot express.
         try:
-            from qiskit.qasm3 import dumps
-            qasm = dumps(self.last_circuit)
+            from qiskit.qasm2 import dumps as _dumps2
+            qasm = _dumps2(self.last_circuit)
+            version = '2.0'
         except Exception as e:
-            errors.append(str(e))
+            errors.append(f"qasm2: {e}")
+        if qasm is None:
+            try:
+                from qiskit.qasm3 import dumps as _dumps3
+                qasm = _dumps3(self.last_circuit)
+                version = '3.0'
+            except Exception as e:
+                errors.append(f"qasm3: {e}")
         if qasm is None:
             self.io.writeln("?EXPORT: OpenQASM export not available.")
             for err in errors:
@@ -457,7 +472,7 @@ class FileIOMixin:
                 self.io.writeln(f"  (overwriting {path})")
             with open(path, 'w', encoding='utf-8') as f:
                 f.write(qasm)
-            self.io.writeln(f"EXPORTED to {path} (OpenQASM 3.0)")
+            self.io.writeln(f"EXPORTED to {path} (OpenQASM {version})")
         else:
             self.io.writeln(qasm)
 

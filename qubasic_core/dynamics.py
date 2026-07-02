@@ -83,6 +83,16 @@ class DynamicsMixin:
         n = self.num_qubits
         up = spec.upper().split()
         kind = up[0] if up else ''
+        if kind == 'MOLECULE':
+            # Built-in STO-3G engine (no pyscf): MOLECULE H2 [R_angstrom].
+            parts = spec.split()
+            mol = parts[1].upper() if len(parts) > 1 else 'H2'
+            if mol != 'H2':
+                raise ValueError("MOLECULE supports H2 (built-in STO-3G engine); "
+                                 "other species need external integrals")
+            r = float(self._safe_eval(parts[2])) if len(parts) > 2 else 0.7414
+            from qubasic_core.qchem import h2_hamiltonian
+            return h2_hamiltonian(r)
         if kind == 'ISING':
             # Transverse-field Ising: -J sum Z_i Z_{i+1} - h sum X_i.
             parts = spec.split()
@@ -238,20 +248,34 @@ class DynamicsMixin:
         return full
 
     def cmd_lindblad(self, rest: str) -> None:
-        """LINDBLAD <H|NONE>, <time>, <steps>, <rate> <op> <q> [; ...] — open-system evolution.
+        """LINDBLAD <H|NONE>, <time>, <steps>, <rate> <op> <q> [; ...] [TRAJ [n]] — open-system evolution.
 
         Integrates drho/dt = -i[H, rho] + sum_k g_k (L_k rho L_k^dag - {L_k^dag L_k, rho}/2)
         with RK4 from the current state (or |0...0>). Jump operators are single-qubit:
         SM (decay), SP (excite), X, Y, Z, N. Reports the final density matrix.
+        TRAJ switches to Monte Carlo wavefunction unraveling (statevector-sized,
+        default 200 trajectories), raising the ceiling from 5 to 15 qubits.
         Example: LINDBLAD NONE, 1.0, 200, 1.0 SM 0"""
+        ntraj = None
+        m_traj = re.search(r'\bTRAJ(?:\s+(\d+))?\s*$', rest, re.IGNORECASE)
+        if m_traj:
+            ntraj = int(m_traj.group(1)) if m_traj.group(1) else 200
+            rest = rest[:m_traj.start()].rstrip().rstrip(',')
         parts = [p.strip() for p in rest.split(',')]
         if len(parts) < 4:
-            self.io.writeln("?USAGE: LINDBLAD <H|NONE>, <time>, <steps>, <rate> <op> <q> [; ...]")
+            self.io.writeln("?USAGE: LINDBLAD <H|NONE>, <time>, <steps>, <rate> <op> <q> [; ...] [TRAJ [n]]")
             return
         n = self.num_qubits
         dim = 2 ** n
-        if n > 5:
-            self.io.writeln(f"?LINDBLAD limited to 5 qubits (dense {dim}x{dim} rho); have {n}")
+        if ntraj is None and n > 5:
+            self.io.writeln(f"?LINDBLAD dense path is limited to 5 qubits ({dim}x{dim} rho); "
+                            f"append TRAJ for Monte Carlo wavefunction (up to 15)")
+            return
+        if ntraj is not None and n > 15:
+            self.io.writeln(f"?LINDBLAD TRAJ is limited to 15 qubits; have {n}")
+            return
+        if ntraj is not None:
+            self._lindblad_traj(parts, ntraj)
             return
         try:
             hname = parts[0].upper()
@@ -318,5 +342,102 @@ class DynamicsMixin:
             self.io.writeln(f"  Purity Tr(rho^2) = {purity:.6f}")
             for i in range(dim):
                 self.variables[f'_RHO{i}'] = float(pops[i])
+        except Exception as e:
+            self.io.writeln(f"?LINDBLAD ERROR: {e}")
+
+    def _lindblad_traj(self, parts: list[str], ntraj: int) -> None:
+        """Monte Carlo wavefunction (quantum-trajectory) Lindblad evolution.
+
+        Waiting-time unraveling: RK4 integration of the non-Hermitian
+        d|psi>/dt = -i H_eff |psi| with H_eff = H - (i/2) sum L^dag L; a jump
+        fires when the decaying norm^2 crosses a pre-drawn uniform, the channel
+        chosen with probability proportional to <L^dag L>. Memory is one
+        statevector, so 15 qubits fit where the dense 4^n rho cannot."""
+        import scipy.sparse as sp
+        n = self.num_qubits
+        dim = 2 ** n
+        try:
+            hname = parts[0].upper()
+            if hname in ('NONE', '0', ''):
+                Heff = sp.csr_matrix((dim, dim), dtype=complex)
+            else:
+                if hname not in self._hamiltonians:
+                    raise ValueError(f"unknown HAMILTONIAN '{hname}'")
+                op = self._hamiltonians[hname]
+                if op.num_qubits != n:
+                    raise ValueError(f"HAMILTONIAN {hname} is {op.num_qubits}-qubit "
+                                     f"but QUBITS is {n}")
+                Heff = op.to_matrix(sparse=True).tocsr().astype(complex)
+            t = float(self._safe_eval(parts[1]))
+            steps = max(1, int(self._safe_eval(parts[2])))
+
+            def embed_sparse(op2, q):
+                left = sp.identity(2 ** (n - 1 - q), format='csr', dtype=complex)
+                right = sp.identity(2 ** q, format='csr', dtype=complex)
+                return sp.kron(left, sp.kron(sp.csr_matrix(op2), right)).tocsr()
+
+            jumps = []
+            for spec in ' '.join(parts[3:]).split(';'):
+                toks = spec.split()
+                if len(toks) != 3:
+                    raise ValueError(f"jump '{spec.strip()}' must be '<rate> <op> <qubit>'")
+                rate = float(self._safe_eval(toks[0]))
+                opname = toks[1].upper()
+                if opname not in _JUMP_OPS:
+                    raise ValueError(f"unknown jump op '{opname}' (use {', '.join(_JUMP_OPS)})")
+                q = int(self._eval_with_vars(toks[2], {}))
+                jumps.append(np.sqrt(rate) * embed_sparse(_JUMP_OPS[opname], q))
+            if not jumps:
+                raise ValueError("TRAJ needs at least one jump operator")
+            LdLs = [(L.getH() @ L).tocsr() for L in jumps]
+            for LdL in LdLs:
+                Heff = Heff - 0.5j * LdL
+            if self.last_sv is not None and np.asarray(self.last_sv).size == dim:
+                psi0 = np.ascontiguousarray(self.last_sv).ravel().astype(complex)
+                psi0 = psi0 / (np.linalg.norm(psi0) or 1.0)
+            else:
+                psi0 = np.zeros(dim, dtype=complex)
+                psi0[0] = 1.0
+            dt = t / steps
+            rng = np.random.default_rng(self._seed)
+            pops = np.zeros(dim)
+            total_jumps = 0
+            for _ in range(ntraj):
+                psi = psi0.copy()
+                r = rng.random()
+                for _ in range(steps):
+                    k1 = -1j * (Heff @ psi)
+                    k2 = -1j * (Heff @ (psi + 0.5 * dt * k1))
+                    k3 = -1j * (Heff @ (psi + 0.5 * dt * k2))
+                    k4 = -1j * (Heff @ (psi + dt * k3))
+                    psi = psi + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+                    if float(np.real(np.vdot(psi, psi))) <= r:
+                        w = np.array([max(float(np.real(np.vdot(psi, LdL @ psi))), 0.0)
+                                      for LdL in LdLs])
+                        ws = float(w.sum())
+                        if ws <= 0:
+                            break
+                        k = int(rng.choice(len(jumps), p=w / ws))
+                        psi = jumps[k] @ psi
+                        psi = psi / (np.linalg.norm(psi) or 1.0)
+                        r = rng.random()
+                        total_jumps += 1
+                nrm = np.linalg.norm(psi)
+                if nrm > 0:
+                    psi = psi / nrm
+                pops += np.abs(psi) ** 2
+            pops /= ntraj
+            self._pending_set_density = None
+            self.last_sv = None
+            self.io.writeln(f"\n  Lindblad evolution to t={t} "
+                            f"(MCWF: {ntraj} trajectories x {steps} RK4 steps, {n} qubits):")
+            self.io.writeln(f"  Mean jumps/trajectory = {total_jumps / ntraj:.2f}")
+            top = np.argsort(pops)[::-1]
+            shown = [i for i in top[:8] if pops[i] > 1e-4]
+            self.io.writeln("  Populations: " + ', '.join(
+                f"|{format(i, f'0{n}b')}>={pops[i]:.4f}" for i in shown))
+            if dim <= 256:
+                for i in range(dim):
+                    self.variables[f'_RHO{i}'] = float(pops[i])
         except Exception as e:
             self.io.writeln(f"?LINDBLAD ERROR: {e}")

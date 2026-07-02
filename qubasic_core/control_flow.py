@@ -207,7 +207,11 @@ class ControlFlowMixin:
         # Surface evaluation errors instead of silently printing the raw source
         # text (which used to turn PRINT SQRT(9) into the literal "SQRT(9)" and
         # an undefined variable into its own name).
-        return str(self._safe_eval(text, extra_ns=ns))
+        val = self._safe_eval(text, extra_ns=ns)
+        # Quantum DATA tokens display in ket notation, not the storage form.
+        if isinstance(val, str) and val.startswith('QSTATE:'):
+            return f"|{val[7:]}>"
+        return str(val)
 
     def _cf_print(self, stmt: str, run_vars: dict[str, Any],
                   parsed: PrintStmt) -> tuple[bool, ExecOutcome]:

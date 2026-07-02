@@ -341,8 +341,18 @@ class TestCommands(unittest.TestCase):
         _, out = capture(self.t.cmd_qubits, '8')
         self.assertEqual(self.t.num_qubits, 8)
         self.assertIn('8 QUBITS', out)
+        # Ceilings are per METHOD: automatic reaches 1024 (stabilizer/MPS),
+        # statevector keeps the 32-qubit memory wall.
+        _, out = capture(self.t.dispatch, 'QUBITS 50')
+        self.assertEqual(self.t.num_qubits, 50)
+        _, out = capture(self.t.dispatch, 'QUBITS 2000')
+        self.assertIn('RANGE', out)
+        capture(self.t.cmd_method, 'statevector')
+        self.assertEqual(self.t.num_qubits, 32)   # clamped to the new method
         _, out = capture(self.t.dispatch, 'QUBITS 50')
         self.assertIn('RANGE', out)
+        capture(self.t.cmd_method, 'automatic')
+        capture(self.t.cmd_qubits, '4')
         _, out = capture(self.t.cmd_shots, '512')
         self.assertEqual(self.t.shots, 512)
 

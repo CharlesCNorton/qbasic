@@ -52,6 +52,10 @@ class Algorithms2Mixin:
             if uname not in self._custom_gates:
                 raise ValueError(f"unknown UNITARY '{uname}'")
             U = self._custom_gates[uname]
+            if not self.program:
+                self.io.writeln("  (no program: the target starts in |0...0>, which reads "
+                                "phase 0 for a diagonal unitary — add prep gates, "
+                                "e.g. 10 X 0, to select another eigenstate)")
             prep, _ = self.build_circuit()    # the program prepares the target eigenstate
             nq = self.num_qubits
             anc = nq                          # dedicated ancilla beyond the system

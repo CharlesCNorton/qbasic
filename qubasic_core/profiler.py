@@ -137,7 +137,9 @@ class ProfilerMixin:
                         self.io.writeln(f"?STATS: run limit ({MAX_STATS_RUNS}) reached, stopping collection")
                         break
                     self._stats_runs.append(dict(self.last_counts))
-                if n > 10 and (trial + 1) % (n // 10) == 0:
+                # Spinner only in an interactive terminal: carriage-return
+                # animation turns into junk in piped or captured output.
+                if n > 10 and (trial + 1) % (n // 10) == 0 and sys.stdout.isatty():
                     from qubasic_core.qol import quantum_spin
                     spin = quantum_spin(trial)
                     self.io.write(f"  {spin} {100 * (trial + 1) // n}%..." + '\r')
@@ -147,7 +149,7 @@ class ProfilerMixin:
             devnull.close()
             if base_seed is not None:
                 self._seed = base_seed
-        if n > 10:
+        if n > 10 and sys.stdout.isatty():
             self.io.write(" " * 30 + '\r')
         self.io.writeln(f"Collected {len(self._stats_runs)} runs ({n} trials)")
 

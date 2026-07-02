@@ -22,6 +22,14 @@ if sys.stderr and hasattr(sys.stderr, 'reconfigure'):
         sys.stderr.reconfigure(encoding='utf-8')
     except Exception:
         pass
+# Piped input (heredocs, PowerShell pipes) often arrives with a UTF-8 BOM
+# that would otherwise mangle the first command; utf-8-sig strips it.
+if sys.stdin and hasattr(sys.stdin, 'reconfigure'):
+    try:
+        if not sys.stdin.isatty():
+            sys.stdin.reconfigure(encoding='utf-8-sig')
+    except Exception:
+        pass
 
 from qubasic_core.terminal import QBasicTerminal
 from qubasic_core.program_mgmt import ProgramMgmtMixin
@@ -81,7 +89,7 @@ def run_script(path: str, terminal: 'QBasicTerminal') -> None:
     After loading all lines, auto-runs the program if it contains
     numbered lines with a MEASURE statement.
     """
-    with open(path, 'r') as f:
+    with open(path, 'r', encoding='utf-8-sig') as f:
         lines = [l.rstrip('\n\r') for l in f.readlines()]
     ProgramMgmtMixin._load_lines_with_defs(
         lines, lambda line: terminal.process(line, track_undo=False))
@@ -106,8 +114,11 @@ def main():
     json_mode = '--json' in args
     agent_mode = '--agent' in args
     spec_mode = '--spec' in args
+    web_mode = '--web' in args
+    kernel_install = '--install-kernel' in args
     seed_val = None
-    for flag in ('--quiet', '-q', '--json', '--agent', '--spec'):
+    for flag in ('--quiet', '-q', '--json', '--agent', '--spec',
+                 '--web', '--install-kernel'):
         args = [a for a in args if a != flag]
     # Parse --seed N
     filtered = []
@@ -135,11 +146,33 @@ def main():
         print("  qubasic --json script     Output results as JSON")
         print("  qubasic --agent script    Confine file writes to the working dir")
         print("  qubasic --seed N script   Set random seed for reproducibility")
+        print("  qubasic --web [port]      Serve a browser REPL (localhost, token-gated)")
+        print("  qubasic --install-kernel  Install the Jupyter kernelspec")
         print("  qubasic --version         Show version (also -v)")
         print("  qubasic --help            Show this help (also -h)")
         print("  python -m qubasic_core    Run without the installed console script")
         print()
         print("Type HELP inside the REPL for full command reference.")
+        sys.exit(0)
+
+    if kernel_install:
+        try:
+            from qubasic_core.jupyter_kernel import install_kernelspec
+            dest = install_kernelspec()
+            print(f"QUBASIC kernelspec installed: {dest}")
+            print("Open Jupyter and pick the 'QUBASIC' kernel.")
+            sys.exit(0)
+        except ImportError:
+            print("?--install-kernel needs jupyter_client + ipykernel "
+                  "(pip install qubasic[jupyter])")
+            sys.exit(1)
+
+    if web_mode:
+        port = 8811
+        if args and args[0].isdigit():
+            port = int(args[0])
+        from qubasic_core.web_repl import serve
+        serve(port)
         sys.exit(0)
 
     if spec_mode:

@@ -78,6 +78,15 @@ class MemoryMixin:
         if self.last_sv is not None:
             sv = np.ascontiguousarray(self.last_sv).ravel()
             self._status[0xD013] = float(np.sum(np.abs(sv) ** 2))
+            # $D014: entanglement entropy of qubit 0 vs the rest (bits), the
+            # partition ENTROPY 0 reports. Little-endian statevector: qubit 0
+            # is the fastest-varying index, so reshape(-1, 2) isolates it.
+            if sv.size >= 4:
+                lam = np.linalg.svd(sv.reshape(-1, 2), compute_uv=False) ** 2
+                lam = lam[lam > 1e-12]
+                self._status[0xD014] = float(-np.sum(lam * np.log2(lam)))
+            else:
+                self._status[0xD014] = 0.0
 
     # ── PEEK ───────────────────────────────────────────────────────────
 
@@ -393,7 +402,7 @@ class MemoryMixin:
         self.io.writeln('')
         for row_start in range(start, end + 1, 16):
             vals = [self._peek(row_start + i) for i in range(16) if row_start + i <= end]
-            hex_part = ' '.join(f'{int(v) & 0xFF:02X}' if abs(v) < 256 else f'{v:4.1f}'[:4]
+            hex_part = ' '.join(f'{int(v) & 0xFF:02X}' if abs(v) < 256 else f'{v:.4g}'
                                for v in vals)
             self.io.writeln(f"  ${row_start:04X}: {hex_part}")
         self.io.writeln('')

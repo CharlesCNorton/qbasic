@@ -558,7 +558,7 @@ class AnalysisMixin:
             if max_par > 0:
                 self.io.writeln(f"    Parallel:     ~{max_par} instances in budget")
 
-        self.io.writeln(f"\n  Qubit scaling (per instance, with {OVERHEAD_FACTOR:.0f}x overhead):")
+        self.io.writeln(f"\n  Qubit scaling (statevector, per instance, with {OVERHEAD_FACTOR:.0f}x overhead):")
         for nq in [16, 20, 24, 28, 30, 32]:
             e = _estimate_gb(nq)
             mp = int(budget / e) if e > 0 and budget >= e else 0
@@ -567,4 +567,6 @@ class AnalysisMixin:
                 self.io.writeln(f"    {nq:>2} qubits: {e:>8.2f} GB  ->  ~{mp:>6,} parallel{marker}")
             else:
                 self.io.writeln(f"    {nq:>2} qubits: {e:>8.2f} GB  ->  exceeds budget{marker}")
+        self.io.writeln("  Beyond the wall: METHOD stabilizer to 4096 qubits (polynomial memory),")
+        self.io.writeln("  MPS/automatic to 1024 (memory set by entanglement, not width).")
         self.io.writeln('')

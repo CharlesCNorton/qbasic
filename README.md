@@ -29,6 +29,10 @@ QUBASIC is a quantum computing environment built on Qiskit Aer that uses BASIC s
 pip install qubasic
 ```
 
+Optional extras: `qubasic[qec]` (stim + pymatching for circuit-level error
+correction), `qubasic[jupyter]` (notebook kernel), `qubasic[qasm3]` (OpenQASM
+3 import), `qubasic[charts]` (sweep charts).
+
 Development install:
 
 ```
@@ -46,6 +50,8 @@ qubasic script.qb             Run a script file
 qubasic --quiet script         Suppress banner, output results only
 qubasic --json script          Machine-readable JSON output
 qubasic --spec                Print a JSON contract (commands, gates, functions)
+qubasic --web [port]          Browser REPL (localhost, token-gated)
+qubasic --install-kernel      Install the Jupyter kernelspec (then pick "QUBASIC")
 qubasic --help                Show CLI help
 ```
 
@@ -173,7 +179,7 @@ RESET 0                Reset qubit to |0>
 ## Configuration
 
 ```
-QUBITS 8             Set qubit count (1-32)
+QUBITS 8             Set qubit count (ceiling is per METHOD)
 SHOTS 2048           Set measurement shots
 METHOD statevector   Set simulation method
 METHOD GPU           Set simulation device
@@ -185,6 +191,13 @@ STATUS JSON          Same, as machine-readable JSON
 `automatic`, `statevector`, `density_matrix`, `stabilizer`, `matrix_product_state`, `extended_stabilizer`, `unitary`, `superop`
 
 Automatic selection: stabilizer for Clifford-only circuits, MPS for >28 qubits, statevector otherwise.
+
+Qubit ceilings are per method: the 32-qubit wall is a statevector memory
+limit only. `stabilizer` reaches 4096 qubits (polynomial tableau),
+`matrix_product_state` and `automatic` reach 1024 (MPS memory is set by
+entanglement, not width), `extended_stabilizer` 63; an 881-qubit GHZ runs in
+seconds on the stabilizer backend. Switching METHOD clamps QUBITS to the new
+ceiling when needed.
 
 ## Variables and expressions
 
@@ -439,8 +452,15 @@ ansatz, compute a cost with `SAVE_EXPECT`, then minimize it.
 20 SAVE_EXPECT Z 0 -> cost
 MINIMIZE theta -> cost              Nelder-Mead minimization (dependency-free)
 MINIMIZE a, b -> z0 + 0.5*z1 ITERS 200   Multi-parameter; cost is any post-run expression
+MINIMIZE a, b -> cost METHOD SPSA   SPSA (2 evals/iter, robust to shot noise)
+MINIMIZE a -> cost METHOD GRAD      Parameter-shift gradient descent
 GRADIENT theta -> cost             Parameter-shift gradient d(cost)/d(theta)
 ```
+
+When the ansatz permits, MINIMIZE/GRADIENT/SWEEP compile the circuit once
+with bound qiskit Parameters and only re-bind values per evaluation (reported
+as "parametric compile") — an order of magnitude on variational loops. The
+fallback for non-symbolic programs is the classic rebuild per step.
 
 ## Dynamic circuits (feedforward)
 
@@ -483,26 +503,64 @@ SAVEPNG out.png hist     Save the histogram as a PNG (also: bloch, circuit; need
 ```
 HAMILTONIAN H = 1.0 ZZ 0 1 + 0.5 X 0    Declare a Pauli-sum Hamiltonian
 HAMILTONIAN H = ISING 1.0 0.5           Builders: ISING, HEISENBERG, HUBBARD, RYDBERG
+HAMILTONIAN H = MOLECULE H2 0.7414      H2/STO-3G (built-in integrals engine, no pyscf)
 10 EVOLVE H, 1.5, 20                     Trotterized e^{-iHt} (time, steps) in a circuit
-LINDBLAD NONE, 1.0, 200, 1.0 SM 0        Open-system master-equation evolution
+10 SAVE_EXPECT H -> e                    <H> of a declared Hamiltonian (VQE cost)
+LINDBLAD NONE, 1.0, 200, 1.0 SM 0        Open-system master-equation evolution (dense, <=5 qubits)
+LINDBLAD H, 1.0, 200, 1.0 SM 0 TRAJ 500  Monte Carlo wavefunction unraveling (<=15 qubits)
 CHANNEL AD = [[1,0],[0,0.95]] ; [[0,0.31],[0,0]]   Define a Kraus channel
 10 APPLYCHANNEL AD 0                      Apply a custom channel
 ```
+
+`MOLECULE H2 [R]` computes the exact 4-qubit Jordan-Wigner Hamiltonian from a
+self-contained STO-3G integrals engine (Gaussian s-orbital closed forms, RHF
+by symmetry). Exact diagonalization at R = 0.7414 reproduces the FCI energy
+-1.1373 Ha, and a one-parameter VQE reaches it in ~30 evaluations.
 
 ## Error correction
 
 ```
 QEC STEANE               Show a code (REP [d], STEANE, SHOR, SURFACE [d]) and its stabilizers
+QEC BB [l m]             Bivariate-bicycle qLDPC (6 6 -> [[72,12,6]], 12 6 -> [[144,12,12]])
 LOGICAL_ERROR_RATE STEANE 0.02   Monte-Carlo logical error rate (optimal lookup decoder)
-LOGICAL_ERROR_RATE SURFACE 0.02 UF   Same, with the union-find / matching decoder
+LOGICAL_ERROR_RATE SURFACE 0.02 UF       Union-find / matching decoder
+LOGICAL_ERROR_RATE SURFACE 11 0.05 MWPM  Batched pymatching MWPM (large distances)
+LOGICAL_ERROR_RATE SURFACE 21 0.001 CIRCUIT 1000000  Circuit-level noise (stim + pymatching)
+LOGICAL_ERROR_RATE BB 0.01       BB codes decode with the internal BP+OSD
 THRESHOLD REP 0.0 0.5 11         Sweep p across distances 3/5/7 (crossing at 0.5)
 DISTILL 0.02             15-to-1 magic-state distillation (output error ~35 p^3)
 LATTICE 0 1              Lattice-surgery joint Zbar-Zbar measurement of two patches
 ```
 
 Codes: repetition (any odd distance), Steane [[7,1,3]], Shor [[9,1,3]], rotated
-surface. Decoders: an optimal minimum-weight lookup table (all codes) and a
-scalable union-find / matching decoder (topological codes, via the `UF` flag).
+surface, and the bivariate-bicycle qLDPC family (parity checks built from the
+cyclic-shift polynomials, k verified by GF(2) ranks). Decoders: an optimal
+minimum-weight lookup table (all codes), a union-find / matching decoder (`UF`),
+batched pymatching MWPM (`MWPM`), and an internal belief-propagation +
+ordered-statistics decoder (BP+OSD-0) for the qLDPC codes.
+
+`CIRCUIT` switches from code capacity to full circuit-level noise: stim
+generates the noisy syndrome-extraction circuit (d rounds of gates,
+measurements, and resets, each carrying errors), pymatching decodes the
+detector error model, and millions of shots run in seconds — a d=21 surface
+patch (944 physical qubits, 9240 detectors) samples at ~13k shots/s.
+
+### Logical-qubit mode
+
+```
+LQUBITS 2 CODE SURFACE 5 PHYS 1e-3   Program on 2 LOGICAL qubits (surface, d=5)
+10 H 0                                Gates now act on logical qubits
+20 CX 0,1                             CX compiles to a lattice-surgery merge+split
+30 MEASURE
+RUN                                   Histogram of LOGICAL outcomes
+LQUBITS OFF                           Back to physical qubits
+```
+
+While active, every operation carries the code's per-op logical error channel
+(from the code-capacity rate for the chosen code, distance, and physical p),
+measurement carries a logical readout flip, and RUN appends the
+lattice-surgery report: surgery ops, syndrome rounds, physical-qubit total,
+wall time at 1 us/round, and the cumulative logical error budget.
 
 ## Benchmarking and verification
 
@@ -850,6 +908,11 @@ qubasic_core/
   display.py             Histograms, statevector, Bloch sphere rendering
   locc.py                LOCC commands, execution, display
   analysis.py            EXPECT, ENTROPY, DENSITY, BENCH, RAM
+  qec2.py                Circuit-level QEC (stim/pymatching), BB qLDPC, BP+OSD
+  logical.py             LQUBITS logical-qubit mode + lattice-surgery report
+  qchem.py               STO-3G molecular Hamiltonians (MOLECULE H2)
+  jupyter_kernel.py      Jupyter kernel (qubasic --install-kernel)
+  web_repl.py            Browser REPL (qubasic --web)
   sweep.py               Parameter sweep with plotille charts
   memory.py              PEEK/POKE/SYS/DUMP/MAP/MONITOR
   strings.py             String functions

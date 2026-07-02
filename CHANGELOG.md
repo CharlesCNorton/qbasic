@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.16.0 (2026-07-02)
+
+Research-grade error correction, per-method scale, parametric variational
+loops, molecular Hamiltonians, and two new front ends (Jupyter, web). The
+existing command surface is unchanged; everything below is additive.
+
+### Added
+- Circuit-level QEC: `LOGICAL_ERROR_RATE <code> <d> <p> CIRCUIT [shots]` runs stim-generated syndrome-extraction circuits (noisy gates, measurements, and resets over d rounds) decoded from the detector error model by pymatching MWPM — a d=21 surface patch samples ~13k shots/s. `MWPM` runs batched pymatching at code capacity for distances the lookup table cannot reach. Both need the `[qec]` extra (stim + pymatching).
+- Bivariate-bicycle qLDPC codes: `QEC BB [l m]` builds the family from cyclic-shift polynomials (6 6 gives [[72,12,6]], 12 6 the [[144,12,12]] gross code) with k verified by GF(2) ranks, and `LOGICAL_ERROR_RATE BB <p>` decodes with an internal belief-propagation + ordered-statistics (BP+OSD-0) decoder — no external dependency.
+- Logical-qubit mode: `LQUBITS <n> CODE <name> <d> [PHYS p]` runs the program on logical qubits — every op carries the code's per-op logical error channel, measurement a logical readout flip, and RUN appends the lattice-surgery report (surgery ops, syndrome rounds, physical qubits, error budget). `LQUBITS OFF` returns to physical mode.
+- Molecular Hamiltonians: `HAMILTONIAN H = MOLECULE H2 [R]` builds the exact 4-qubit Jordan-Wigner Hamiltonian from a self-contained STO-3G integrals engine (no pyscf); exact diagonalization reproduces the FCI energy -1.1373 Ha at R=0.7414, and `SAVE_EXPECT <name> -> var` now accepts a declared Hamiltonian for VQE cost functions.
+- Optimizers: `MINIMIZE ... METHOD SPSA` (two evaluations per iteration, robust to shot noise) and `METHOD GRAD` (parameter-shift gradient descent with adaptive step) join Nelder-Mead.
+- Lindblad trajectories: `LINDBLAD ... TRAJ [n]` switches to Monte Carlo wavefunction unraveling (sparse H_eff + quantum jumps), raising the open-system ceiling from 5 to 15 qubits.
+- Jupyter kernel (`qubasic --install-kernel`, then pick "QUBASIC") and a token-gated browser REPL (`qubasic --web [port]`, localhost by default).
+- A golden-script test layer (`tests/test_golden.py`): whole programs asserted end to end on physics identities (inverse round trips, teleportation fidelity, EXPORT-LOADQASM fixed point, FCI energies) and on the 0.15.0 audit regressions.
+
+### Changed
+- Qubit ceilings are per METHOD: statevector keeps the 32-qubit memory wall, stabilizer reaches 4096 (an 881-qubit GHZ runs in ~12 s), MPS/automatic 1024, extended_stabilizer 63. Switching METHOD clamps QUBITS when needed, and QUBITS/RAM report memory in method-appropriate terms instead of a misleading 2^n estimate.
+- MINIMIZE, GRADIENT, and SWEEP compile the circuit once with bound qiskit Parameters and re-bind per evaluation when the ansatz permits (reported as "parametric compile"), an order of magnitude on variational loops; non-symbolic programs fall back to the rebuild path.
+- GST characterizes 2-qubit programs (product fiducials, 16x16 Pauli Transfer Matrix) as well as 1-qubit.
+- The STATS progress spinner writes only to an interactive terminal, and SWEEP shows a transient progress bar there; piped and captured output is unchanged.
+- `PRINT`ing a quantum DATA token shows ket notation (|GHZ3>) instead of the storage form; IQPE hints when the target register has no eigenstate preparation; LOCCINFO branch statistics count every SEND across all shots instead of the bits' final values; LOADQASM points at `pip install qubasic[qasm3]` when the 3.0 importer is missing.
+
+## 0.15.0 (2026-07-02)
+
+Error-handling, calibration, and I/O fixes from a full-surface audit. The
+quantum engine is unchanged.
+
+### Fixed
+- `RESUME`, `RESUME NEXT`, and `RESUME <line>` return to the mainline after a trapped error: the executor routes per-line errors through the ON ERROR handler in-loop, so a handler runs as ordinary program code and resumes where the README says. Error trapping arms per run (a stale target from a previous RUN no longer traps early), the 200-line handler budget applies per activation, and an error raised inside a handler is fatal.
+- `$D014` (entanglement_entropy) is populated after each run with the qubit-0-vs-rest entropy in bits, matching `ENTROPY 0`; it always read 0.0.
+- `EXPORT` emits OpenQASM 2.0 when the circuit allows, so its output round-trips through `LOADQASM` without the optional `qiskit_qasm3_import` package. Dynamic circuits still export as 3.0, and the message reports the version written.
+- `SWEEP` restores the swept variable afterward instead of leaving it at the final sweep point, so a following RUN or STATS sees the program's own value.
+- A UTF-8 BOM no longer mangles the first statement: piped stdin and all program readers (script files, `LOAD`, `INCLUDE`, `IMPORT`, `LOADQASM`) decode utf-8-sig.
+
+### Changed
+- `XEB` reports the self-normalized linear fidelity (sampled numerator over the perfect-sampling denominator `2^n sum(p^2) - 1`), so 1.0 is the true ideal at any width; the raw estimator tops out at (D-1)/(D+1), 0.6 at 2 qubits.
+- `OPTIMIZE` reports a depth increase as such instead of a negative reduction.
+- The `SWEEP` chart's y-axis is fixed to [0, 1].
+- `DUMP` prints registers wider than a byte compactly (`698.6`) instead of truncating the decimal.
+- Qiskit's advisory warning about passing coupling_map/basis_gates with a backend is silenced on the device-model path, where that combination is by design.
+
 ## 0.14.0 (2026-06-19)
 
 Second audit-gap round: a complete agent contract, BASIC truth values, range
