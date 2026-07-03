@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.17.0 (2026-07-02)
+
+Hardening from an SMT-verifier triage (touchstone-prover over all 651
+functions: 153 proved trap-free, 3 refutations traced, none reachable from
+the language surface).
+
+### Changed
+- `_pmul` raises a clear ValueError on a non-Pauli character and `_emit_mcz` on an empty qubit list, instead of a raw KeyError/IndexError — both are internal preconditions (every caller feeds alphabet-constrained values), now self-documenting.
+- `_eval_with_vars` declares the ParameterExpression passthrough in its return annotation instead of claiming `-> float`.
+
 ## 0.16.0 (2026-07-02)
 
 Research-grade error correction, per-method scale, parametric variational
