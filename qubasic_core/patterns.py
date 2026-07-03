@@ -79,6 +79,7 @@ RE_INPUT_FILE = re.compile(r'INPUT\s+#(\d+)\s*,\s*(\w+\$?)', re.IGNORECASE)
 RE_LINE_INPUT = re.compile(
     r'LINE\s+INPUT\s+(?:"([^"]*)"\s*,\s*)?(\w+\$?)', re.IGNORECASE)
 RE_OPTION_BASE = re.compile(r'OPTION\s+BASE\s+([01])', re.IGNORECASE)
+RE_OPTION_ENDIAN = re.compile(r'OPTION\s+ENDIAN\s+(BIG|LITTLE)', re.IGNORECASE)
 RE_IMPORT = re.compile(r'IMPORT\s+"?([^"]+)"?', re.IGNORECASE)
 RE_SAVE_EXPECT = re.compile(r'SAVE_EXPECT\s+(\w+)((?:[\s,]+\d+)*)\s*->\s*(\w+)', re.IGNORECASE)
 RE_SAVE_PROBS = re.compile(r'SAVE_PROBS\s+([\d\s,]+)\s*->\s*(\w+)', re.IGNORECASE)
@@ -169,6 +170,7 @@ __all__ = [
     "RE_INPUT_FILE",
     "RE_LINE_INPUT",
     "RE_OPTION_BASE",
+    "RE_OPTION_ENDIAN",
     "RE_IMPORT",
     "RE_SAVE_EXPECT",
     "RE_SAVE_PROBS",

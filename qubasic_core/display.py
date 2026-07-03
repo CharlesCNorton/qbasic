@@ -40,22 +40,38 @@ class DisplayMixin:
         Console(file=buf, highlight=False, force_terminal=force).print(*renderables)
         self.io.write(buf.getvalue())
 
+    def _bits(self, s: str) -> str:
+        """A bitstring in the active display convention.
+
+        Little-endian (qubit 0 rightmost, the qiskit order) unless
+        OPTION ENDIAN BIG reversed it. LOCC joint keys ('0|01|1') reverse
+        per register segment, keeping the A|B|C register order.
+        """
+        if not getattr(self, '_endian_big', False):
+            return s
+        if '|' in s:
+            return '|'.join(seg[::-1] for seg in s.split('|'))
+        return s[::-1]
+
     def _bit_order_note(self, display: list) -> str | None:
         """Human-facing reminder of which bit is which qubit.
 
         Bitstrings are little-endian (qubit 0 is the rightmost character), the
-        most common source of off-by-reverse mistakes when reading a histogram.
-        When the result covers the whole register the positions are labelled
-        q(n-1) ... q1 q0; for a measured subset only the convention is shown.
+        most common source of off-by-reverse mistakes when reading a histogram,
+        unless OPTION ENDIAN BIG flipped the display order. When the result
+        covers the whole register the positions are labelled per qubit; for a
+        measured subset only the convention is shown.
         """
         if not display:
             return None
+        big = getattr(self, '_endian_big', False)
         nbits = len(display[0][0])
         nq = getattr(self, 'num_qubits', nbits)
         if nbits == nq and nbits <= 16:
-            labels = ' '.join(f'q{i}' for i in range(nbits - 1, -1, -1))
-            return f"  bit order  {labels}   (qubit 0 = rightmost)"
-        return "  bit order  qubit 0 = rightmost bit"
+            order = range(nbits) if big else range(nbits - 1, -1, -1)
+            labels = ' '.join(f'q{i}' for i in order)
+            return f"  bit order  {labels}   (qubit 0 = {'leftmost' if big else 'rightmost'})"
+        return f"  bit order  qubit 0 = {'leftmost' if big else 'rightmost'} bit"
 
     def print_histogram(self, counts: dict[str, int]) -> None:
         """Measurement histogram with optional rich-table formatting."""
@@ -96,7 +112,7 @@ class DisplayMixin:
             bar = '\u2588' * bar_len
             color = "green" if pct > 40 else "yellow" if pct > 10 else "dim"
             table.add_row(
-                f"|{state}\u27E9",
+                f"|{self._bits(state)}\u27E9",
                 str(count),
                 f"{pct:5.1f}%",
                 f"[{color}]{bar}[/{color}]")
@@ -129,7 +145,7 @@ class DisplayMixin:
             pct = 100 * count / total
             bar_len = int(HISTOGRAM_BAR_WIDTH * count / max_count)
             bar = '\u2588' * bar_len
-            ket = f"|{state}\u27E9"
+            ket = f"|{self._bits(state)}\u27E9"
             # Colorize bar by probability
             if _theme and sys.stdout.isatty():
                 rst = _theme.get('reset', '')
@@ -162,7 +178,7 @@ class DisplayMixin:
             count = 0
             for i, amp in enumerate(sv):
                 if abs(amp) > AMPLITUDE_THRESHOLD:
-                    state = format(i, f'0{n}b')
+                    state = self._bits(format(i, f'0{n}b'))
                     prob = abs(amp)**2
                     table.add_row(
                         f"|{state}\u27E9",
@@ -186,7 +202,7 @@ class DisplayMixin:
         count = 0
         for i, amp in enumerate(sv):
             if abs(amp) > AMPLITUDE_THRESHOLD:
-                state = format(i, f'0{n}b')
+                state = self._bits(format(i, f'0{n}b'))
                 prob = abs(amp)**2
                 self.io.writeln(f"  |{state}\u27E9  {amp.real:+.4f}{amp.imag:+.4f}j  "
                                f"(P={prob:.4f})")
@@ -204,7 +220,7 @@ class DisplayMixin:
         parts = []
         for i, amp in enumerate(sv):
             if abs(amp) > AMPLITUDE_THRESHOLD:
-                state = format(i, f'0{n}b')
+                state = self._bits(format(i, f'0{n}b'))
                 if abs(amp.imag) < AMPLITUDE_THRESHOLD:
                     parts.append(f"{amp.real:+.3f}|{state}\u27E9")
                 else:
@@ -221,7 +237,7 @@ class DisplayMixin:
         for i, amp in enumerate(sv):
             p = abs(amp)**2
             if p > AMPLITUDE_THRESHOLD:
-                state = format(i, f'0{n}b')
+                state = self._bits(format(i, f'0{n}b'))
                 probs.append((state, p))
 
         probs.sort(key=lambda x: -x[1])

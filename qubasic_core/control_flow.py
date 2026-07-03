@@ -17,7 +17,7 @@ from qubasic_core.statements import (
     DataStmt, ReadStmt, OnGotoStmt, OnGosubStmt,
     SelectCaseStmt, CaseStmt, EndSelectStmt, ElseStmt, EndIfStmt,
     DoStmt, LoopStmt, ExitStmt,
-    SwapStmt, DefFnStmt, OptionBaseStmt,
+    SwapStmt, DefFnStmt, OptionBaseStmt, OptionEndianStmt,
     SubStmt, EndSubStmt, FunctionStmt, EndFunctionStmt, CallStmt,
     LocalStmt, StaticStmt, SharedStmt,
     OnErrorStmt, ResumeStmt, ErrorStmt, AssertStmt, StopStmt,
@@ -463,6 +463,7 @@ class ControlFlowMixin:
         SwapStmt:        lambda s, st, p, ls, sl, ip, rv, ef: s._cf_swap(st, rv, parsed=p),
         DefFnStmt:       lambda s, st, p, ls, sl, ip, rv, ef: s._cf_def_fn(st, rv, parsed=p),
         OptionBaseStmt:  lambda s, st, p, ls, sl, ip, rv, ef: s._cf_option_base(st, parsed=p),
+        OptionEndianStmt: lambda s, st, p, ls, sl, ip, rv, ef: s._cf_option_endian(st, parsed=p),
         # Handlers defined in subs.py (parsed is keyword-only)
         SubStmt:         lambda s, st, p, ls, sl, ip, rv, ef: s._cf_sub(st, sl, ip, parsed=p),
         EndSubStmt:      lambda s, st, p, ls, sl, ip, rv, ef: s._cf_end_sub(st, parsed=p),

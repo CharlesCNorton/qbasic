@@ -160,6 +160,10 @@ class Algorithms2Mixin:
         n = self.num_qubits
         if len(target) != n:
             raise ValueError(f"AMPLIFY target must be {n} bits, got {len(target)}")
+        # The target reads in the active display convention, so what you see in
+        # the histogram is what you type here; internally it stays q_{n-1}..q0.
+        if getattr(self, '_endian_big', False):
+            target = target[::-1]
         # Oracle: phase-flip |target> by X-conjugating the all-ones MCZ.
         flip = [i for i, b in enumerate(target) if b == '0']  # bitstring is q_{n-1}..q0
         qubits = list(range(n))

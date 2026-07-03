@@ -33,7 +33,7 @@ from qubasic_core.statements import (
     OnGotoStmt, OnGosubStmt, SelectCaseStmt, CaseStmt,
     CallStmt, SubStmt, FunctionStmt,
     OnErrorStmt, ResumeStmt, ErrorStmt, AssertStmt,
-    SwapStmt, DefFnStmt, OptionBaseStmt,
+    SwapStmt, DefFnStmt, OptionBaseStmt, OptionEndianStmt,
     OnMeasureStmt, OnTimerStmt, DataStmt, ReadStmt,
     LocalStmt, StaticStmt, SharedStmt,
     LetStmt, LetArrayStmt, LetStrStmt, PrintStmt, PrintUsingStmt,
@@ -223,6 +223,10 @@ def _handle_option(text, raw):
     m = RE_OPTION_BASE.match(text)
     if m:
         return OptionBaseStmt(raw=raw, base=int(m.group(1)))
+    from qubasic_core.patterns import RE_OPTION_ENDIAN
+    m = RE_OPTION_ENDIAN.match(text)
+    if m:
+        return OptionEndianStmt(raw=raw, big=m.group(1).upper() == 'BIG')
     return None
 
 def _handle_data(text, raw):

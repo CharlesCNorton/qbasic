@@ -186,7 +186,7 @@ class ProfilerMixin:
             variance = sum((v - mean) ** 2 for v in vals) / len(vals)
             std = math.sqrt(variance)
             prob = mean / avg_shots if avg_shots > 0 else 0
-            self.io.writeln(f"  |{state}\u27E9  {mean:>8.1f}  {std:>8.2f}  {min(vals):>6}  {max(vals):>6}  {prob:>7.4f}")
+            self.io.writeln(f"  |{self._bits(state)}\u27E9  {mean:>8.1f}  {std:>8.2f}  {min(vals):>6}  {max(vals):>6}  {prob:>7.4f}")
         self.io.writeln('')
 
     def _stats_export_csv(self, path: str) -> None:

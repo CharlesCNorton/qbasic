@@ -80,6 +80,8 @@ _SPEC_STATEMENTS = [
     ('FUNCTION', 'FUNCTION <name>(<args>)', 'function returning a value (END FUNCTION)'),
     ('DIM', 'DIM <name>(<size>[,...])', 'declare an array (name$ for strings; inclusive sizing)'),
     ('REDIM', 'REDIM [PRESERVE] <name>(<size>)', 'resize an array; PRESERVE keeps existing data'),
+    ('OPTION', 'OPTION BASE 0|1 | OPTION ENDIAN BIG|LITTLE',
+     'array index base; bitstring display order (default LITTLE, qubit 0 rightmost)'),
 ]
 
 

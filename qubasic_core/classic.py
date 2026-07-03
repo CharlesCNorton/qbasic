@@ -421,3 +421,17 @@ class ClassicMixin:
                 return None
             self._option_base = int(m.group(1))
         return True, ExecResult.ADVANCE
+
+    def _cf_option_endian(self, stmt: str, *, parsed=None) -> tuple[bool, ExecOutcome] | None:
+        """OPTION ENDIAN BIG|LITTLE — bitstring display order (default LITTLE,
+        the qiskit convention: qubit 0 rightmost). Display-side only: internal
+        counts keys and statevector indexing keep the qiskit order."""
+        if parsed is not None:
+            self._endian_big = parsed.big
+        else:
+            from qubasic_core.patterns import RE_OPTION_ENDIAN
+            m = RE_OPTION_ENDIAN.match(stmt)
+            if not m:
+                return None
+            self._endian_big = m.group(1).upper() == 'BIG'
+        return True, ExecResult.ADVANCE

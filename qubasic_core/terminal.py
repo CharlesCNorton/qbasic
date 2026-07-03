@@ -1165,7 +1165,9 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
             'method': self.sim_method,
             'device': self.sim_device,
             'seed': getattr(self, '_seed', None),
-            'bit_order': 'little-endian (qubit 0 = rightmost bit)',
+            'bit_order': ('big-endian (qubit 0 = leftmost bit)'
+                          if getattr(self, '_endian_big', False)
+                          else 'little-endian (qubit 0 = rightmost bit)'),
             'option_base': getattr(self, '_option_base', 0),
             'locc_mode': bool(getattr(self, 'locc_mode', False)),
             'locc_registers': (list(self.locc.names)
@@ -1677,12 +1679,18 @@ class QBasicTerminal(Engine, ExecutorMixin, ExpressionMixin, DisplayMixin, DemoM
         JSON-serializable: counts, qubit/shot config, user variables, the
         statevector (when small enough), and key run-manifest fields.
         """
+        _big = getattr(self, '_endian_big', False)
+        _counts = self.last_counts or {}
+        if _big and _counts:
+            _counts = {k[::-1]: v for k, v in _counts.items()}
         out: dict = {
-            'counts': self.last_counts or {},
+            'counts': _counts,
             'num_qubits': self.num_qubits,
+            # Bitstring keys follow the active OPTION ENDIAN convention; the
+            # bit_order field is the self-describing record of which one.
             'shots': self.shots,
-            # Bitstrings are little-endian: the rightmost character is qubit 0.
-            'bit_order': 'little-endian (qubit 0 = rightmost bit)',
+            'bit_order': ('big-endian (qubit 0 = leftmost bit)' if _big
+                          else 'little-endian (qubit 0 = rightmost bit)'),
         }
         uvars = {k: v for k, v in self.variables.items()
                  if not k.startswith('_') and isinstance(v, (int, float, str, bool))}

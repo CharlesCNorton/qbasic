@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.18.0 (2026-07-03)
+
+### Added
+- `OPTION ENDIAN BIG|LITTLE` — bitstring display order, the BASIC-flavored sibling of `OPTION BASE`. BIG shows qubit 0 leftmost (the textbook order) across every displayed bitstring: histograms and their bit-order header, STATE, PROBS, STEP's live statevector, SWEEP lines, STATS, LOCC register and joint histograms (per-register, keeping the A|B|C order), CSV, and the JSON `counts` (whose `bit_order` field records the active convention, as does STATUS). Bitstring-shaped input follows the display, so the `AMPLIFY` target you type is the histogram line you read. Internal counts keys and statevector indexing keep the qiskit little-endian order, so programs that string-match keys are unaffected.
+
+### Changed
+- `SAVE` persists `OPTION BASE` and `OPTION ENDIAN`, so a LOADed program restores its conventions.
+
 ## 0.17.0 (2026-07-02)
 
 Hardening from an SMT-verifier triage (touchstone-prover over all 651

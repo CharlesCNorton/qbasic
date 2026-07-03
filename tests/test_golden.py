@@ -204,6 +204,56 @@ class TestAuditRegressions(unittest.TestCase):
         _, out = run_script(['METHOD statevector', 'QUBITS 100'])
         self.assertIn('RANGE', out)
 
+    def test_option_endian_big_display(self):
+        t, out = run_script([
+            'QUBITS 3',
+            'SHOTS 128',
+            'OPTION ENDIAN BIG',
+            '10 X 0',
+            '20 MEASURE',
+            'RUN',
+            'STATE',
+        ])
+        self.assertIn('qubit 0 = leftmost', out)
+        self.assertIn('|100', out)                       # displayed big-endian
+        self.assertEqual(dict(t.last_counts), {'001': 128})   # internal keys unchanged
+        self.assertEqual(t.result()['counts'], {'100': 128})  # JSON follows the toggle
+        self.assertIn('big-endian', t.result()['bit_order'])
+
+    def test_option_endian_amplify_matches_display(self):
+        # Under BIG, the AMPLIFY target reads as displayed: '100' marks the
+        # state whose histogram line says |100> (internally |001>).
+        t, _ = run_script([
+            'QUBITS 3',
+            'SHOTS 512',
+            'OPTION ENDIAN BIG',
+            '10 H 0 : H 1 : H 2',
+            '20 AMPLIFY 100',
+            '30 AMPLIFY 100',
+            '40 MEASURE',
+            'RUN',
+        ])
+        top = max(t.last_counts, key=t.last_counts.get)
+        self.assertEqual(top, '001')
+
+    def test_option_endian_save_roundtrip(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            old_cwd = os.getcwd()
+            os.chdir(td)
+            try:
+                run_script([
+                    'OPTION ENDIAN BIG',
+                    '10 H 0',
+                    '20 MEASURE',
+                    'SAVE endian.qb',
+                ])
+                t2, _ = run_script(['LOAD endian.qb'])
+                self.assertTrue(getattr(t2, '_endian_big', False))
+            finally:
+                os.chdir(old_cwd)
+
 
 class TestResearchQEC(unittest.TestCase):
     def test_bb_code_parameters(self):

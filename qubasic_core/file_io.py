@@ -54,6 +54,10 @@ class FileIOMixin:
                     f.write(f"METHOD {self.sim_device}\n")
                 if getattr(self, '_screen_mode', 0):
                     f.write(f"SCREEN {self._screen_mode}\n")
+                if getattr(self, '_option_base', 0):
+                    f.write(f"OPTION BASE {self._option_base}\n")
+                if getattr(self, '_endian_big', False):
+                    f.write("OPTION ENDIAN BIG\n")
                 if getattr(self, '_seed', None) is not None:
                     f.write(f"SEED {self._seed}\n")
                 if getattr(self, '_noise_spec', None):
@@ -489,7 +493,7 @@ class FileIOMixin:
             total = sum(self.last_counts.values())
             lines.append("state,count,probability")
             for state, count in sorted(self.last_counts.items(), key=lambda x: -x[1]):
-                lines.append(f"{state},{count},{count/total:.6f}")
+                lines.append(f"{self._bits(state)},{count},{count/total:.6f}")
         if self.last_sv is not None:
             lines.append("")
             lines.append("state,amplitude_re,amplitude_im,probability")

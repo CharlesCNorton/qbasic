@@ -176,6 +176,10 @@ class OptionBaseStmt(Stmt):
     base: int
 
 @dataclass(frozen=True, slots=True)
+class OptionEndianStmt(Stmt):
+    big: bool
+
+@dataclass(frozen=True, slots=True)
 class OnMeasureStmt(Stmt):
     target: int
 

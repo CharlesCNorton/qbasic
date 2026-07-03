@@ -243,6 +243,8 @@ ERASE data              Delete array
 OPTION BASE 1           Set array index base
 ```
 
+(`OPTION ENDIAN BIG|LITTLE`, the other OPTION toggle, lives under Display.)
+
 `DIM a(n)` is inclusive: it spans indices base..n, so the declared top index is valid. A `DIM`med array enforces its declared bounds on write; an undimensioned array grows on first assignment.
 
 ## Control flow
@@ -354,6 +356,17 @@ DENSITY                  Density matrix
 ```
 
 Bitstrings are little-endian: qubit 0 is the rightmost character. Histograms print a `q(n-1) ... q1 q0` header so the mapping is explicit.
+
+```
+OPTION ENDIAN BIG        Display bitstrings big-endian (qubit 0 leftmost, the textbook order)
+OPTION ENDIAN LITTLE     Back to the default (qubit 0 rightmost, the qiskit order)
+```
+
+The toggle covers every displayed bitstring (histograms, STATE, PROBS, STEP,
+SWEEP, STATS, LOCC registers, CSV, and the JSON `counts` — whose `bit_order`
+field records the active convention) and the bitstring-shaped inputs that
+mirror the display (`AMPLIFY`). Internal counts keys and statevector indexing
+keep the qiskit order, so programs that string-match keys are unaffected.
 
 ### Screen modes
 ```
