@@ -119,6 +119,8 @@ class AlgorithmsMixin:
 
     def _emit_mcz(self, qc, qs: list[int]) -> None:
         """Multi-controlled Z over qs (phase flip of the all-ones state)."""
+        if not qs:
+            raise ValueError("MCZ needs at least one qubit")
         if len(qs) == 1:
             qc.z(qs[0])
         elif len(qs) == 2:

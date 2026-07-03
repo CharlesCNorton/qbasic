@@ -420,12 +420,12 @@ class ExpressionMixin:
             else self._safe_eval(expr)
         return int(val)
 
-    def _eval_with_vars(self, expr: str, run_vars: dict[str, Any]) -> float:
+    def _eval_with_vars(self, expr: str, run_vars: dict[str, Any]) -> float | Any:
         """Evaluate expression with runtime variables.
 
-        A qiskit ParameterExpression (present only during a parametric
-        MINIMIZE/GRADIENT/SWEEP build) passes through unfloated so it lands
-        in the circuit as a bindable parameter.
+        Returns a float, except that a qiskit ParameterExpression (present
+        only during a parametric MINIMIZE/GRADIENT/SWEEP build) passes
+        through unfloated so it lands in the circuit as a bindable parameter.
         """
         val = self._safe_eval(expr, extra_ns=run_vars)
         try:

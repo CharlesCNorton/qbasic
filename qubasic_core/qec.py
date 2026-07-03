@@ -38,7 +38,12 @@ def _anticommute(a: str, b: str) -> int:
 
 
 def _pmul(a: str, b: str) -> str:
-    return ''.join(_PMUL[(pa, pb)] for pa, pb in zip(a, b))
+    # Precondition: both strings over the IXYZ alphabet. The try keeps the
+    # per-trial hot path free of per-character validation.
+    try:
+        return ''.join(_PMUL[(pa, pb)] for pa, pb in zip(a, b))
+    except KeyError as e:
+        raise ValueError(f"Pauli strings must be over IXYZ (got {e.args[0]})") from None
 
 
 def _weight(p: str) -> int:
